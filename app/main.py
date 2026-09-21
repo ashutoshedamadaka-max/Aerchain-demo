@@ -961,6 +961,8 @@ def main() -> None:
             st.caption("Corrugated packaging sourcing")
             unknown = render_event_tiles(db, lines, submissions, len(review_queue(db)))
             st.divider()
+            render_processing(db, len({s["vendor_id"] for s in submissions}), len(lines))
+            st.divider()
             st.subheader("Vendor responses")
             if submissions:
                 names = {v["vendor_id"]: v["name"] for v in vendors}
@@ -972,8 +974,6 @@ def main() -> None:
                 st.info("No submissions yet.")
             st.divider()
             render_review_queue(db, review_column, review_direction, unknown)
-            st.divider()
-            render_processing(db, len({s["vendor_id"] for s in submissions}), len(lines))
         elif page == "Comparison":
             st.title("Comparison")
             grid_vendors = comparison_vendors(vendors)
