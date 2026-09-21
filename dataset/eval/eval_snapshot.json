@@ -1,0 +1,424 @@
+{
+ "generated_at": "2026-09-20T20:45:07",
+ "extraction": {
+  "vendors": {
+   "V1": {
+    "name": "Sahyadri Packaging Industries Ltd",
+    "flagged_wrong": 0,
+    "flagged_right": 2,
+    "silent_wrong": 0,
+    "not_flagged_right": 88
+   },
+   "V2": {
+    "name": "Kaveri Board & Cartons Pvt Ltd",
+    "flagged_wrong": 0,
+    "flagged_right": 2,
+    "silent_wrong": 0,
+    "not_flagged_right": 88
+   },
+   "V3": {
+    "name": "Om Sai Box Works",
+    "flagged_wrong": 0,
+    "flagged_right": 12,
+    "silent_wrong": 0,
+    "not_flagged_right": 45
+   },
+   "V5": {
+    "name": "Vardhaman Carton Works",
+    "flagged_wrong": 0,
+    "flagged_right": 4,
+    "silent_wrong": 0,
+    "not_flagged_right": 26
+   }
+  },
+  "overall": {
+   "flagged_wrong": 0,
+   "flagged_right": 20,
+   "silent_wrong": 0,
+   "not_flagged_right": 247
+  },
+  "fields": 267
+ },
+ "photo": {
+  "rows": 30,
+  "pass1": {
+   "mapped": 30,
+   "mapped_correctly": 30,
+   "prices_transcribed": 25,
+   "prices_exactly_right": 25
+  },
+  "pass2": {
+   "mapped": 30,
+   "mapped_correctly": 30,
+   "prices_transcribed": 26,
+   "prices_exactly_right": 25
+  },
+  "flagged": [
+   11,
+   12,
+   13,
+   14,
+   22,
+   23,
+   27
+  ],
+  "expected_uncertain": [
+   11,
+   12,
+   13,
+   14,
+   22,
+   23,
+   27
+  ],
+  "disagree": [
+   23
+  ],
+  "wrong_in_any_pass": [
+   11,
+   12,
+   13,
+   14,
+   23
+  ],
+  "cells": {
+   "flagged_wrong": 5,
+   "flagged_right": 2,
+   "silent_wrong": 0,
+   "not_flagged_right": 23
+  }
+ },
+ "questionnaire": {
+  "vendors": {
+   "V1": {
+    "flagged_wrong": 1,
+    "flagged_right": 0,
+    "silent_wrong": 0,
+    "not_flagged_right": 13
+   },
+   "V2": {
+    "flagged_wrong": 0,
+    "flagged_right": 1,
+    "silent_wrong": 1,
+    "not_flagged_right": 12
+   },
+   "V3": {
+    "flagged_wrong": 0,
+    "flagged_right": 2,
+    "silent_wrong": 0,
+    "not_flagged_right": 12
+   },
+   "V5": {
+    "flagged_wrong": 0,
+    "flagged_right": 13,
+    "silent_wrong": 1,
+    "not_flagged_right": 0
+   }
+  },
+  "overall": {
+   "flagged_wrong": 1,
+   "flagged_right": 16,
+   "silent_wrong": 2,
+   "not_flagged_right": 37
+  },
+  "answers": 56,
+  "diffs": [
+   {
+    "vendor": "V1",
+    "q_no": 4,
+    "fields": [
+     "state",
+     "expiry"
+    ],
+    "got_state": "needs_review",
+    "expected_state": "extracted",
+    "silent": false
+   },
+   {
+    "vendor": "V2",
+    "q_no": 4,
+    "fields": [
+     "state",
+     "stance"
+    ],
+    "got_state": "extracted",
+    "expected_state": "claimed_unsupported",
+    "silent": true
+   },
+   {
+    "vendor": "V5",
+    "q_no": 12,
+    "fields": [
+     "state"
+    ],
+    "got_state": "extracted",
+    "expected_state": "missing",
+    "silent": true
+   }
+  ],
+  "by_question": {
+   "1": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "2": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "3": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "4": {
+    "answers": 4,
+    "wrong": 2,
+    "silent": 1,
+    "vendors": [
+     "V1",
+     "V2"
+    ]
+   },
+   "5": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "6": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "7": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "8": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "9": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "10": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "11": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "12": {
+    "answers": 4,
+    "wrong": 1,
+    "silent": 1,
+    "vendors": [
+     "V5"
+    ]
+   },
+   "13": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   },
+   "14": {
+    "answers": 4,
+    "wrong": 0,
+    "silent": 0,
+    "vendors": []
+   }
+  },
+  "gates": {
+   "V1": {
+    "got": {
+     "G1": "pass",
+     "G2": "pass",
+     "G3": "pass"
+    },
+    "expected": {
+     "G1": "pass",
+     "G2": "pass",
+     "G3": "pass"
+    }
+   },
+   "V2": {
+    "got": {
+     "G1": "pass",
+     "G2": "pass",
+     "G3": "pass"
+    },
+    "expected": {
+     "G1": "pass",
+     "G2": "pass",
+     "G3": "pass"
+    }
+   },
+   "V3": {
+    "got": {
+     "G1": "fail",
+     "G2": "fail",
+     "G3": "fail"
+    },
+    "expected": {
+     "G1": "fail",
+     "G2": "fail",
+     "G3": "fail"
+    }
+   },
+   "V5": {
+    "got": {
+     "G1": "pass",
+     "G2": "pass",
+     "G3": "pass"
+    },
+    "expected": {
+     "G1": "pass",
+     "G2": "pass",
+     "G3": "pass"
+    }
+   }
+  },
+  "gate_clearance": {
+   "got": [
+    "V1",
+    "V2",
+    "V5"
+   ],
+   "expected": [
+    "V1",
+    "V2",
+    "V5"
+   ]
+  },
+  "attachments": {
+   "expected": 10,
+   "got": 10,
+   "missing": 1,
+   "extra": 1,
+   "wrong": 0
+  }
+ },
+ "award": {
+  "basis": "ex_freight",
+  "gates": [
+   "V1",
+   "V2",
+   "V5"
+  ],
+  "baseline": "cheapest single vendor (V2), re-priced, ex freight",
+  "scenarios": [
+   {
+    "scenario": "single_vendor",
+    "label": "Cheapest single vendor, gated",
+    "vendors": [
+     "V2"
+    ],
+    "naive": 0.0,
+    "repriced": 0.0,
+    "pct": 0.0,
+    "recommendable": true,
+    "blockers": []
+   },
+   {
+    "scenario": "cheapest_per_line",
+    "label": "Cheapest per line, gates ignored",
+    "vendors": [
+     "V1",
+     "V2",
+     "V3",
+     "V5"
+    ],
+    "naive": 1305562.737440005,
+    "repriced": 192750.31244000793,
+    "pct": 0.49370249300634605,
+    "recommendable": false,
+    "blockers": [
+     "gates_not_applied",
+     "validity_expired"
+    ]
+   },
+   {
+    "scenario": "gated_split",
+    "label": "Gated split",
+    "vendors": [
+     "V1",
+     "V2",
+     "V5"
+    ],
+    "naive": 1188818.3782400042,
+    "repriced": 100529.09324000031,
+    "pct": 0.25749096498976093,
+    "recommendable": true,
+    "blockers": []
+   },
+   {
+    "scenario": "max_vendors",
+    "label": "At most 2 vendors, gated",
+    "vendors": [
+     "V2",
+     "V5"
+    ],
+    "naive": 345533.3782400042,
+    "repriced": 43219.39324000478,
+    "pct": 0.11070032478133139,
+    "recommendable": true,
+    "blockers": []
+   },
+   {
+    "scenario": "max_share",
+    "label": "No vendor above 70%, gated",
+    "vendors": [
+     "V1",
+     "V2",
+     "V5"
+    ],
+    "naive": 1188818.3782400042,
+    "repriced": 100529.09324000031,
+    "pct": 0.25749096498976093,
+    "recommendable": true,
+    "blockers": []
+   }
+  ]
+ },
+ "sanity": {
+  "flagged": 0,
+  "generated": "2026-09-20 20:45"
+ },
+ "tests": {
+  "passed": 147,
+  "skipped": 2,
+  "failed": 0,
+  "gates": {
+   "test_gates_exclude_the_cheapest_vendor": "passed",
+   "test_before_the_questionnaire_the_gated_scenario_has_no_gates_and_refuses": "passed",
+   "test_after_the_questionnaire_the_pipeline_supplies_the_same_gates_the_buyer_did": "passed",
+   "test_v3_is_excluded_because_the_gates_are_evaluated_and_not_because_it_was_left_out": "passed",
+   "test_a_gate_that_stops_being_supported_changes_the_award_without_touching_the_award_engine": "passed",
+   "test_the_live_database_supplies_the_same_gates": "passed"
+  },
+  "sanity": {
+   "test_a_clean_database_flags_nothing": "passed",
+   "test_seeded_faults_are_all_caught": "passed"
+  },
+  "seeded_faults": 30
+ }
+}
