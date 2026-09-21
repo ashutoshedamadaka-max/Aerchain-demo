@@ -193,7 +193,7 @@ def provenance(record: dict | None, *, vendor_ingested: bool, question: str | No
 REVIEW_COLUMNS = {
     "vendor": "Vendor", "line": "Line / short spec", "value": "Extracted value",
     "reason": "Reason code", "risk": "Value at risk (₹)",
-    "question": "Resolving question",
+    "question": "Clarifying question",
 }
 REVIEW_CSS = """
 <style>
@@ -212,6 +212,10 @@ vertical-align:top;text-align:left}
 .review-table .detail {display:block;font-size:.8rem;opacity:.8;margin-top:4px}
 .review-table .unknown {border:1px dashed currentColor;border-radius:4px;padding:3px 6px}
 .review-table em {white-space:pre-wrap}
+.review-table details summary {cursor:pointer;list-style:none;font-style:italic}
+.review-table details summary::-webkit-details-marker {display:none}
+.review-table details[open] summary {margin-bottom:6px}
+.review-table details div {font-style:italic;white-space:pre-wrap}
 </style>
 """
 
@@ -300,6 +304,13 @@ def sorted_review_items(items: list[dict], column: str = "risk",
     return unknown + sorted(known, key=key, reverse=direction == "desc")
 
 
+def question_cell(text: str, limit: int = 60) -> str:
+    """A short question stays as is; a long one shows its first ~60 characters and a ▸ that opens the full drafted question in place."""
+    if len(text) <= limit:
+        return f"<em>{escape(text)}</em>"
+    return f"<details><summary>{escape(text[:limit].rstrip())}… ▸</summary><div>{escape(text)}</div></details>"
+
+
 def review_table_html(items: list[dict], column: str = "risk",
                       direction: str = "desc", question_for=None) -> str:
     """Accessible HTML header links control sorting; all database text is escaped."""
@@ -330,7 +341,7 @@ def review_table_html(items: list[dict], column: str = "risk",
                      f' · {escape(row.get("unit") or "")}</span></td>'
                      f'<td>{escape(row.get("reason_code") or "—")}</td>'
                      f'<td class="risk" title="{escape(row["risk_basis"])}">{risk}</td>'
-                     f'<td><em>{escape((question_for(row) if question_for else None) or row.get("resolving_question") or "—")}</em></td></tr>')
+                     f'<td>{question_cell((question_for(row) if question_for else None) or row.get("resolving_question") or "—")}</td></tr>')
     parts.append("</tbody></table></div>")
     return "".join(parts)
 
@@ -508,22 +519,26 @@ def render_clarifications(fields: list[dict], lines: list[dict], vendors: list[d
     download.download_button("Download .txt", saved[1], file_name=f"clarifications_{vid}.txt", mime="text/plain")
 
 
-def render_processing(db: Path) -> None:
-    st.markdown("**Processing**")
-    try:
-        summary = processing_summary(db) if db.is_file() else None
-    except (sqlite3.Error, ImportError) as exc:
-        st.caption(f"Processing record unavailable: {exc}")
-        return
-    if not summary:
-        st.caption("No model usage recorded yet.")
-        return
-    seconds = lambda t: f"{t:.0f} s" if t < 90 else f"{t / 60:.1f} min"
-    inr = lambda x: "n/a" if x != x else f"₹{fmt.indian(x, 0)}"
-    known = sum(c for _, _, c in summary if c == c)
-    lines = [f"| {label} | {seconds(t)} | {inr(c)} |" for label, t, c in summary]
-    lines.append(f"| **Total** | **~{sum(t for _, t, _ in summary) / 60:.0f} min** | **~₹{fmt.indian(known, 0)}** |")
-    st.markdown("| Stage | Time | Cost |" + "\n|---|---:|---:|" + "\n" + "\n".join(lines))
+def render_processing(db: Path, vendor_count: int, line_count: int) -> None:
+    st.subheader("How this event was processed")
+    with st.container(border=True):
+        try:
+            summary = processing_summary(db) if db.is_file() else None
+        except (sqlite3.Error, ImportError) as exc:
+            st.caption(f"Processing record unavailable: {exc}")
+            return
+        if not summary:
+            st.caption("No model usage recorded yet.")
+            return
+        seconds = lambda t: f"{t:.0f} s" if t < 90 else f"{t / 60:.1f} min"
+        inr = lambda x: "n/a" if x != x else f"₹{fmt.indian(x, 0)}"
+        known = sum(c for _, _, c in summary if c == c)
+        minutes = sum(t for _, t, _ in summary) / 60
+        st.markdown(f"**Processed {vendor_count} vendors, {line_count} lines in ~{minutes:.0f} minutes for ~₹{fmt.indian(known, 0)}.**")
+        with st.expander("Per-stage breakdown"):
+            rows = [f"| {label} | {seconds(t)} | {inr(c)} |" for label, t, c in summary]
+            rows.append(f"| **Total** | **~{minutes:.0f} min** | **~₹{fmt.indian(known, 0)}** |")
+            st.markdown("| Stage | Time | Cost |" + chr(10) + "|---|---:|---:|" + chr(10) + chr(10).join(rows))
 
 
 def question_context(db: Path) -> tuple[dict, dict]:
@@ -534,26 +549,55 @@ def question_context(db: Path) -> tuple[dict, dict]:
     return lines, fields
 
 
-def render_review_queue(db: Path, column: str, direction: str) -> None:
-    st.subheader("Review queue", anchor="review-queue")
+EXPOSURE_LABEL = "Total ₹ affected (normalized, per vendor-line, ex-freight)"
+
+
+def review_exposure_total(db: Path) -> tuple[float | None, int]:
+    """The analyst layer's own review_exposure(): normalized INR per piece x annual RFx quantity, one exposure per vendor-line. Returns (total, unknown vendor-lines)."""
+    from src.analyst import Store
+    try:
+        r = Store(db).review_exposure()
+    except sqlite3.Error:                                        # no normalized prices yet: the total is not available, never a guess
+        return None, 0
+    return r["known_exposure_inr"], r["unknown_vendor_lines"]
+
+
+def render_review_queue(db: Path, column: str, direction: str, unknown: int = 0) -> None:
+    st.header("Review queue", anchor="review-queue")
+    with st.expander("Settings"):
+        render_settings_row(db, "Event")
+        st.caption("The review block threshold decides when an uncertain line stops a recommendation: a line worth more than this share of the event's value blocks it; below it, "
+                   "the recommendation still runs and lists the line as a warning. Lower it to be stricter, raise it to be more permissive.")
     items = review_queue(db)
-    total = sum(r["risk"] for r in items if r["risk"] is not None)
-    unknown = sum(r["risk"] is None for r in items)
-    left, right = st.columns(2)
-    left.metric("Total items", len(items))
-    right.metric("Total ₹ at risk (known)", f"₹ {fmt.indian(total, 0)}")
     st.caption("sorted by potential impact, not by document order.")
     st.caption("Uncertain fields where the buyer should confirm the number before signing. Each row below carries the reason and a drafted question "
-               "to send the vendor. Totals sum field-level exposures, which may overlap on the same line.")
-    st.caption("Quoted-price estimate; per-100 and per-kg prices are not normalized.")
+               "to send the vendor. The total above counts each vendor-line once at its normalized price, so it is not the sum of the rows.")
+    st.caption("Row figures are quoted-price estimates; per-100 and per-kg prices are not normalized.")
     if unknown:
-        st.caption(f"{unknown} item(s) have value unknown, appear first, and are excluded from the ₹ total.")
+        st.caption(f"{unknown} vendor-line(s) have no price to value them and are not in the total.")
     if items:
         lines, fields = question_context(db)
         names = {r["vendor_id"]: r["vendor_name"] for r in items}
         st.markdown(review_table_html(items, column, direction, lambda r: clarify.vendor_question(r, names[r["vendor_id"]], lines, fields)), unsafe_allow_html=True)
     else:
         st.info("No bid fields currently need review.")
+
+
+def render_event_tiles(db: Path, lines: list, submissions: list, flagged: int) -> int:
+    """The five headline tiles. Returns the number of vendor-lines with no price (for the queue's note). The exposure total is the analyst layer's review_exposure()."""
+    extracted = read_table(db, "SELECT COUNT(*) AS n FROM bid_fields b JOIN submissions s USING(submission_id) WHERE b.state='extracted' AND s.submission_id=("
+                               "SELECT s2.submission_id FROM submissions s2 WHERE s2.vendor_id=s.vendor_id ORDER BY s2.received_on DESC,s2.submission_id DESC LIMIT 1)")
+    total, unknown = review_exposure_total(db)
+    tiles = st.columns(5)
+    tiles[0].metric("RFx lines", len(lines))
+    tiles[1].metric("Vendors submitted", len({s["vendor_id"] for s in submissions}))
+    tiles[2].metric("Fields extracted", extracted[0]["n"] if extracted else 0)
+    tiles[3].metric("Fields flagged", flagged)
+    tiles[4].metric(EXPOSURE_LABEL, "not available" if total is None else f"₹ {fmt.indian(total, 0)}",
+                    help="Value of the affected vendor-line quotes: normalized ₹ per piece × annual RFx quantity, one exposure per vendor-line, ex-freight. "
+                         "Not an expected loss and not an award total.")
+    return unknown
+
 
 QUESTIONNAIRE_VENDORS = ("V1", "V2", "V3", "V5")
 ANSWER_STATES = {
@@ -915,14 +959,8 @@ def main() -> None:
             st.markdown("<style>[data-testid='stMainBlockContainer']{padding-top:1rem;padding-bottom:1rem} [data-testid='stVerticalBlock']{gap:.65rem} [data-testid='stHorizontalBlock']{flex-wrap:nowrap;gap:.8rem} [data-testid='stColumn']{min-width:0!important;flex:1 1 0!important} [data-testid='stMetricValue']{font-size:1.6rem} h1{margin:0;padding-top:0} .review-scroll{overflow:visible}</style>", unsafe_allow_html=True)
             st.title("Event")
             st.caption("Corrugated packaging sourcing")
-            tiles, processing = st.columns(2)
-            for col, label, count in zip(tiles.columns(3), ["Line items", "Vendors", "Submissions"],
-                                         [len(lines), len(vendors), len(submissions)]):
-                col.metric(label, count)
-            with processing:
-                render_processing(db)
-            render_settings_row(db, "Event")
-            render_review_queue(db, review_column, review_direction)
+            unknown = render_event_tiles(db, lines, submissions, len(review_queue(db)))
+            st.divider()
             st.subheader("Vendor responses")
             if submissions:
                 names = {v["vendor_id"]: v["name"] for v in vendors}
@@ -932,6 +970,10 @@ def main() -> None:
                           for s in submissions])
             else:
                 st.info("No submissions yet.")
+            st.divider()
+            render_review_queue(db, review_column, review_direction, unknown)
+            st.divider()
+            render_processing(db, len({s["vendor_id"] for s in submissions}), len(lines))
         elif page == "Comparison":
             st.title("Comparison")
             grid_vendors = comparison_vendors(vendors)
