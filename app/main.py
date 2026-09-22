@@ -87,23 +87,27 @@ def unit_price_index(fields: list[dict]) -> dict[tuple[int, str], dict]:
 COMPARISON_GLYPHS = {"extracted": ("✓", "Extracted"), "needs_review": ("⚠", "Needs review"), "missing": ("✗", "Missing"), "not_quoted": ("–", "Not quoted")}
 COMPARE_CSS = """
 <style>
-.cmp-scroll {overflow:auto; max-height:74vh; padding-bottom:4px}
-.cmp-grid {border-collapse:collapse;width:100%;font-size:.86rem}
-.cmp-grid caption {text-align:left;padding:6px 2px 10px;font-weight:600}
-.cmp-grid th {text-align:left;padding:8px 10px;min-width:150px;background:#f4f6f5}
+/* Self-contained light card, independent of the surrounding Streamlit theme (light or dark): every rule below pairs an
+   explicit background with an explicit, readable text colour so the table never inherits invisible dark-on-dark or
+   light-on-light text from the page chrome. */
+.cmp-scroll {overflow:auto; max-height:74vh; padding-bottom:4px; background:#fff; border-radius:8px}
+.cmp-grid {border-collapse:collapse;width:100%;font-size:.86rem;color:#1c2b27}
+.cmp-grid caption {text-align:left;padding:6px 2px 10px;font-weight:600;color:#1c2b27}
+.cmp-grid th {text-align:left;padding:8px 10px;min-width:150px;background:#eef1ef;color:#1c2b27}
 .cmp-grid th:first-child {min-width:210px}
 .cmp-grid thead th {position:sticky;top:0;z-index:2;box-shadow:0 1px 0 #ccc}
-.cmp-grid tbody th {position:sticky;left:0;z-index:1;box-shadow:1px 0 0 #ccc}
-.cmp-grid td {padding:0;vertical-align:middle;border-bottom:1px solid #e4e4e4}
+.cmp-grid tbody th {position:sticky;left:0;z-index:1;box-shadow:1px 0 0 #ccc;background:#f8f9f8}
+.cmp-grid td {padding:0;vertical-align:middle;border-bottom:1px solid #e4e4e4;background:#fff}
 .cmp-grid tr.row-amber th:first-child {border-left:4px solid #936510}
 .cmp-grid tr.row-red th:first-child {border-left:4px solid #a84343}
-.cmp-grid a.cmp-cell {display:block;padding:9px 10px;color:inherit;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cmp-grid a.cmp-cell:hover {box-shadow:inset 0 0 0 2px currentColor;border-radius:4px}
-.cmp-grid a.cmp-cell:focus-visible {outline:3px solid currentColor;outline-offset:-3px}
-.cmp-grid .extracted {color:#173d2c}
-.cmp-grid .needs_review {color:#573900}
-.cmp-grid .not_quoted {color:#3d4148}
-.cmp-grid .missing {color:#7d2525}
+.cmp-grid a.cmp-cell {display:block;margin:4px 6px;padding:6px 9px;border-radius:6px;text-decoration:none;
+white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:#f2f4f3;color:#1c2b27}
+.cmp-grid a.cmp-cell:hover {box-shadow:inset 0 0 0 2px currentColor}
+.cmp-grid a.cmp-cell:focus-visible {outline:3px solid #1a6fc4;outline-offset:1px}
+.cmp-grid .extracted a.cmp-cell {background:#eef7f1;color:#173d2c}
+.cmp-grid .needs_review a.cmp-cell {background:#fff5d8;color:#573900}
+.cmp-grid .not_quoted a.cmp-cell {background:#f2f2f4;color:#3d4148}
+.cmp-grid .missing a.cmp-cell {background:#fff0f0;color:#7d2525}
 </style>
 """
 
