@@ -23,7 +23,7 @@ import streamlit.components.v1 as components
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from app import clarify, fmt
+from app import award_words, clarify, fmt
 from app.award_note import generate_award_note
 from src import settings
 STATES = {
@@ -84,46 +84,124 @@ def unit_price_index(fields: list[dict]) -> dict[tuple[int, str], dict]:
             if r.get("field_name", "unit_price") == "unit_price"}
 
 
-def comparison_html(lines: list[dict], vendors: list[dict], fields: list[dict]) -> str:
-    """Render one glyph per cell; declined/missing states never expose a price."""
+COMPARISON_GLYPHS = {"extracted": ("✓", "Extracted"), "needs_review": ("⚠", "Needs review"), "missing": ("✗", "Missing"), "not_quoted": ("–", "Not quoted")}
+COMPARE_CSS = """
+<style>
+.cmp-scroll {overflow:auto; max-height:74vh; padding-bottom:4px}
+.cmp-grid {border-collapse:collapse;width:100%;font-size:.86rem}
+.cmp-grid caption {text-align:left;padding:6px 2px 10px;font-weight:600}
+.cmp-grid th {text-align:left;padding:8px 10px;min-width:150px;background:#f4f6f5}
+.cmp-grid th:first-child {min-width:210px}
+.cmp-grid thead th {position:sticky;top:0;z-index:2;box-shadow:0 1px 0 #ccc}
+.cmp-grid tbody th {position:sticky;left:0;z-index:1;box-shadow:1px 0 0 #ccc}
+.cmp-grid td {padding:0;vertical-align:middle;border-bottom:1px solid #e4e4e4}
+.cmp-grid tr.row-amber th:first-child {border-left:4px solid #936510}
+.cmp-grid tr.row-red th:first-child {border-left:4px solid #a84343}
+.cmp-grid a.cmp-cell {display:block;padding:9px 10px;color:inherit;text-decoration:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cmp-grid a.cmp-cell:hover {box-shadow:inset 0 0 0 2px currentColor;border-radius:4px}
+.cmp-grid a.cmp-cell:focus-visible {outline:3px solid currentColor;outline-offset:-3px}
+.cmp-grid .extracted {color:#173d2c}
+.cmp-grid .needs_review {color:#573900}
+.cmp-grid .not_quoted {color:#3d4148}
+.cmp-grid .missing {color:#7d2525}
+</style>
+"""
+
+
+def comparison_html(lines: list[dict], vendors: list[dict], fields: list[dict], mode: str = "normalized", norm_by_pair: dict | None = None) -> str:
+    """One line per cell: a state icon plus a value; the unit/basis or comparability note that used to sit on its own line is now the cell's tooltip.
+    mode='quoted' shows the vendor's own stated price and unit; mode='normalized' shows the normalized ex-freight INR/piece from norm_prices where one exists.
+    A row gets a coloured left-border strip: amber if any vendor's cell is needs_review, else red if any is missing, else none."""
     index = unit_price_index(fields)
+    norm_by_pair = norm_by_pair or {}
     ingested = {r["vendor_id"] for r in fields}
-    parts = [CSS, '<div class="quote-scroll"><table class="quote-grid">',
-             '<caption>Quoted rates in their original currency and pricing basis</caption>',
+    caption = "Normalized ex-freight rate, ₹ per piece" if mode == "normalized" else "Quoted rates in their original currency and pricing basis"
+    parts = [COMPARE_CSS, '<div class="cmp-scroll"><table class="cmp-grid">', f'<caption>{escape(caption)}</caption>',
              '<thead><tr><th scope="col">RFx line</th>']
     parts.extend(f'<th scope="col">{escape(v["name"])}</th>' for v in vendors)
     parts.append("</tr></thead><tbody>")
     for line in lines:
-        parts.append(f'<tr><th scope="row">{line["line_no"]} · {escape(line["sku"])}</th>')
+        states = set()
+        for vendor in vendors:
+            states.add(index.get((line["line_no"], vendor["vendor_id"]), {}).get("state"))
+        row_class = " row-amber" if "needs_review" in states else (" row-red" if "missing" in states else "")
+        parts.append(f'<tr id="cmp-line-{line["line_no"]}" class="{row_class.strip()}"><th scope="row">{line["line_no"]} · {escape(line["sku"])}</th>')
         for vendor in vendors:
             record = index.get((line["line_no"], vendor["vendor_id"]), {})
             state = record.get("state", "missing")
-            if state not in STATES:
+            if state not in COMPARISON_GLYPHS:
                 state = "missing"
-            glyph, label = STATES[state]
+            glyph, label = COMPARISON_GLYPHS[state]
             href = "?" + urlencode({"bid_vendor": vendor["vendor_id"],
                                       "bid_line": line["line_no"]}) + "#source-evidence"
+            not_ingested = vendor["vendor_id"] not in ingested
+            tooltip = [label]
+            if record.get("reason_code"):
+                tooltip.append(f"Reason: {record['reason_code']}")
+            value = None
+            if not_ingested:
+                value = "not ingested"
+            elif mode == "normalized":
+                norm = norm_by_pair.get((vendor["vendor_id"], line["line_no"]))
+                if norm and norm.get("inr_per_piece") is not None:
+                    value = fmt.price(norm["inr_per_piece"], "INR")
+                    if norm.get("comparability"):
+                        tooltip.append(f"Comparability: {norm['comparability']}")
+                elif state in ("extracted", "needs_review"):
+                    value = "Not comparable"
+                    tooltip.append("No normalized price for this cell")
+            if value is None:
+                if state == "not_quoted":
+                    value = "Not quoted"
+                elif state == "missing" or record.get("value") is None:
+                    value = "No value"
+                else:
+                    value = fmt.price(record["value"], record.get("currency"))
+                    unit = record.get("unit") or record.get("basis") or ""
+                    if unit:
+                        tooltip.append(unit)
             aria = escape(f'Show source evidence for {vendor["name"]}, line {line["line_no"]}, {label}')
-            parts.append(f'<td class="{state}"><a class="bid-cell" href="{escape(href)}" '
-                         f'target="_self" aria-label="{aria}">'
-                         f'<span class="status">{glyph} {label}</span>')
-            if vendor["vendor_id"] not in ingested:
-                parts.append("not ingested")
-            elif state == "not_quoted":
-                parts.append("Not quoted")
-            elif state == "missing":
-                parts.append("No value recorded")
-            elif record.get("value") is None:
-                parts.append("No value recorded")
-            else:
-                price = fmt.price(record["value"], record.get("currency"))
-                parts.append(escape(price))
-                unit = record.get("unit") or record.get("basis") or ""
-                parts.append(f'<span class="detail">{escape(unit)}</span>')
-            parts.append("</a></td>")
+            parts.append(f'<td class="{state}"><a class="cmp-cell" href="{escape(href)}" target="_self" '
+                         f'title="{escape(" · ".join(tooltip))}" aria-label="{aria}">{glyph} {escape(value)}</a></td>')
         parts.append("</tr>")
     parts.append("</tbody></table></div>")
     return "".join(parts)
+
+
+def unit_price_states(lines: list[dict], vendor_ids: list[str], fields: list[dict]) -> dict[int, set[str]]:
+    """Per RFx line, the unit-price states actually recorded for the given vendors. A vendor cell with no bid_fields row contributes no state."""
+    index = unit_price_index(fields)
+    return {line["line_no"]: {index[(line["line_no"], v)]["state"] for v in vendor_ids if (line["line_no"], v) in index} for line in lines}
+
+
+def comparison_stats(lines: list[dict], vendor_ids: list[str], fields: list[dict], norm_by_pair: dict) -> dict:
+    """Total lines; lines where every vendor is extracted; lines with at least one needs_review/missing/not_quoted; and the vendor with the
+    lowest summed normalized total (₹ per piece x annual RFx quantity, over the lines it has a normalized price for)."""
+    index = unit_price_index(fields)
+    all_clean = sum(1 for line in lines if vendor_ids and all(index.get((line["line_no"], v), {}).get("state") == "extracted" for v in vendor_ids))
+    any_flag = sum(1 for line in lines if any(index.get((line["line_no"], v), {}).get("state") in ("needs_review", "missing", "not_quoted") for v in vendor_ids))
+    totals = {}
+    for v in vendor_ids:
+        total, priced = 0.0, False
+        for line in lines:
+            row = norm_by_pair.get((v, line["line_no"]))
+            if row and row.get("inr_per_piece") is not None:
+                total += row["inr_per_piece"] * line["annual_qty"]
+                priced = True
+        if priced:
+            totals[v] = total
+    cheapest = min(totals, key=totals.get) if totals else None
+    return dict(total_lines=len(lines), all_clean=all_clean, any_flag=any_flag, cheapest_vendor=cheapest,
+                cheapest_total=totals.get(cheapest) if cheapest else None)
+
+
+def copy_button(text: str, key: str, label: str = "Copy to clipboard") -> None:
+    """A small button that copies text to the clipboard, falling back to a manual-select textarea if the Clipboard API is unavailable."""
+    payload = json.dumps(text).replace("</", "<" + chr(92) + "/")
+    components.html(f'<button id="{key}" style="font:14px sans-serif;padding:7px 14px;border:1px solid #bbb;border-radius:8px;background:#fff;cursor:pointer">{escape(label)}</button>'
+                    '<script>const t=' + payload + f';const b=document.getElementById("{key}");b.onclick=async()=>{{let ok=false;try{{await navigator.clipboard.writeText(t);ok=true}}catch(e){{}}'
+                    'if(!ok){const a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();ok=document.execCommand("copy");a.remove()}'
+                    'b.textContent=ok?"Copied":"Copy failed - select the text above"}</script>', height=46)
 
 
 def apply_cell_link(vendors: list[dict], lines: list[dict]) -> None:
@@ -159,8 +237,8 @@ def sync_bid_selection() -> None:
         st.session_state["_last_bid_link"] = (vendor_id, str(line_no))
 
 
-def provenance(record: dict | None, *, vendor_ingested: bool, question: str | None = None, heading: bool = True) -> None:
-    """Display only evidence recorded on the selected unit-price field."""
+def provenance(record: dict | None, *, vendor_ingested: bool, question: str | None = None, heading: bool = True, show_clarification: bool = True) -> None:
+    """Display only evidence recorded on the selected unit-price field. show_clarification=False leaves the drafted question to a caller that shows it elsewhere."""
     if heading:
         st.subheader("Source evidence", anchor="source-evidence")
     if record is None:
@@ -177,7 +255,7 @@ def provenance(record: dict | None, *, vendor_ingested: bool, question: str | No
         if record.get("derivation"):
             st.caption("Derivation")
             st.code(clarify.plain_derivation(record["derivation"]), language=None, wrap_lines=True)
-        if question or record.get("resolving_question"):
+        if show_clarification and (question or record.get("resolving_question")):
             st.markdown('<div class="clarification" role="note">'
                         '<strong>Draft clarification to vendor</strong><p>'
                         + escape(question or record["resolving_question"]) + '</p></div>',
@@ -511,11 +589,7 @@ def render_clarifications(fields: list[dict], lines: list[dict], vendors: list[d
         st.markdown(shown)                                                 # a hard line break under each item; the copied and downloaded text keep the plain layout
     copy, download = st.columns([1, 1])
     with copy:
-        payload = json.dumps(saved[1]).replace("</", "<" + chr(92) + "/")
-        components.html('<button id="c" style="font:14px sans-serif;padding:7px 14px;border:1px solid #bbb;border-radius:8px;background:#fff;cursor:pointer">Copy to clipboard</button>'
-                        '<script>const t=' + payload + ';const b=document.getElementById("c");b.onclick=async()=>{let ok=false;try{await navigator.clipboard.writeText(t);ok=true}catch(e){}'
-                        'if(!ok){const a=document.createElement("textarea");a.value=t;document.body.appendChild(a);a.select();ok=document.execCommand("copy");a.remove()}'
-                        'b.textContent=ok?"Copied":"Copy failed - select the text above"}</script>', height=46)
+        copy_button(saved[1], key="clar_copy")
     download.download_button("Download .txt", saved[1], file_name=f"clarifications_{vid}.txt", mime="text/plain")
 
 
@@ -977,7 +1051,7 @@ def main() -> None:
         elif page == "Comparison":
             st.title("Comparison")
             grid_vendors = comparison_vendors(vendors)
-            # One current submission per vendor, consistently used by grid and evidence.
+            # One current submission per vendor, consistently used by the grid, the stat tiles and the Details pane.
             fields = read_table(db, """
                 SELECT b.field_id,b.field_name,b.rfx_line_no,b.value,b.unit,b.basis,
                        b.currency,b.state,b.reason_code,b.anchor,b.snippet,b.derivation,
@@ -990,9 +1064,33 @@ def main() -> None:
                 )
                 ORDER BY b.field_id
             """)
+            try:                                      # norm_prices does not exist until normalization has run once
+                norms = read_table(db, """
+                    SELECT s.vendor_id,p.rfx_line_no,p.inr_per_piece,p.comparability
+                    FROM norm_prices p JOIN submissions s USING(submission_id)
+                    WHERE s.submission_id=(
+                        SELECT latest.submission_id FROM submissions latest
+                        WHERE latest.vendor_id=s.vendor_id
+                        ORDER BY latest.received_on DESC,latest.submission_id DESC LIMIT 1
+                    )
+                """)
+            except sqlite3.OperationalError:
+                norms = []
+            norm_by_pair = {(r["vendor_id"], r["rfx_line_no"]): r for r in norms}
             vendor_names = {v["vendor_id"]: v["name"] for v in grid_vendors}
             line_names = {r["line_no"]: f'{r["line_no"]} · {r["sku"]}' for r in lines}
-            render_settings_row(db, "Comparison")
+
+            stats = comparison_stats(lines, [v["vendor_id"] for v in grid_vendors], fields, norm_by_pair)
+            tiles = st.columns(4)
+            tiles[0].metric("Total lines", stats["total_lines"])
+            tiles[1].metric("All-vendor clean", stats["all_clean"])
+            tiles[2].metric("Any flag", stats["any_flag"])
+            if stats["cheapest_vendor"]:
+                tiles[3].metric("Cheapest overall", f"{vendor_names.get(stats['cheapest_vendor'], stats['cheapest_vendor'])} ({stats['cheapest_vendor']})",
+                                delta=award_words.crore(stats["cheapest_total"]), delta_color="off")
+            else:
+                tiles[3].metric("Cheapest overall", "not available")
+
             with st.expander("Award note export", expanded=True):
                 scenario = st.selectbox("Award scenario", list(SCENARIO_LABELS), format_func=SCENARIO_LABELS.get)
                 cost_basis = st.selectbox("Award cost basis", ["landed", "ex_freight"])
@@ -1003,26 +1101,48 @@ def main() -> None:
                     for gap in saved[4]:
                         st.warning(gap)
                     st.download_button("Download award_note.md", saved[3], file_name="award_note.md", mime="text/markdown")
-            st.caption("✓ Extracted · ? Needs review · — Not quoted · ∅ Missing")
-            st.caption("Quoted currency and basis are shown as received. "
-                       "Click a cell or use the selectors to view its source evidence.")
-            st.info("Click any cell to see where the number came from and the drafted question the buyer would send if it's uncertain.")
-            st.markdown(comparison_html(lines, grid_vendors, fields), unsafe_allow_html=True)
+
+            view = st.radio("View", ["Normalized (₹/piece ex-freight)", "Quoted rates (original currency)"], horizontal=True, key="cmp_view_mode")
+            mode = "normalized" if view.startswith("Normalized") else "quoted"
+            st.caption("✓ extracted (clean) · ⚠ needs_review (amber border) · ✗ missing (red border) · – not_quoted")
+            st.caption("Click any cell to see where the number came from and the drafted question the buyer would send if it's uncertain. "
+                       "Hover a cell for its unit, basis or comparability note.")
+            jump_col, go_col, _ = st.columns([1, 1, 3])
+            jump_to = jump_col.number_input("Jump to line", min_value=1, max_value=max(len(lines), 1), step=1, key="cmp_jump_line")
+            if go_col.button("Go", key="cmp_jump_go"):
+                st.session_state["cmp_jump_target"] = jump_to
+            st.markdown(comparison_html(lines, grid_vendors, fields, mode, norm_by_pair), unsafe_allow_html=True)
             if not lines:
                 st.info("The comparison grid is waiting for event lines.")
-            st.subheader("Source evidence", anchor="source-evidence")
-            left, right = st.columns(2)
-            vendor_id = left.selectbox("Vendor", list(vendor_names),
-                                       format_func=vendor_names.get, key="bid_vendor",
-                                       on_change=sync_bid_selection)
-            line_no = right.selectbox("Line", list(line_names),
-                                      format_func=line_names.get, disabled=not lines,
-                                      key="bid_line", on_change=sync_bid_selection)
-            record = unit_price_index(fields).get((line_no, vendor_id))
-            by_key = {(r["submission_id"], r["rfx_line_no"], r["field_name"]): r for r in fields}
-            provenance(record, vendor_ingested=any(r["vendor_id"] == vendor_id for r in fields), heading=False,
-                       question=clarify.vendor_question(record, vendor_names.get(vendor_id, vendor_id), {r["line_no"]: r for r in lines}, by_key) if record else None)
-            render_clarifications(fields, lines, grid_vendors, db)
+            if target := st.session_state.pop("cmp_jump_target", None):
+                st.html(f"<script>document.getElementById('cmp-line-{target}')?.scrollIntoView({{behavior:'smooth',block:'center'}});</script>", unsafe_allow_javascript=True)
+
+            st.divider()
+            with st.container(border=True):
+                st.header("Details", anchor="source-evidence")
+                sel_left, sel_right = st.columns(2)
+                vendor_id = sel_left.selectbox("Vendor", list(vendor_names),
+                                               format_func=vendor_names.get, key="bid_vendor",
+                                               on_change=sync_bid_selection)
+                line_no = sel_right.selectbox("Line", list(line_names),
+                                              format_func=line_names.get, disabled=not lines,
+                                              key="bid_line", on_change=sync_bid_selection)
+                record = unit_price_index(fields).get((line_no, vendor_id))
+                by_key = {(r["submission_id"], r["rfx_line_no"], r["field_name"]): r for r in fields}
+                question = clarify.vendor_question(record, vendor_names.get(vendor_id, vendor_id), {r["line_no"]: r for r in lines}, by_key) if record else None
+                ev_col, cl_col = st.columns(2)
+                with ev_col:
+                    st.subheader("Source evidence")
+                    provenance(record, vendor_ingested=any(r["vendor_id"] == vendor_id for r in fields), heading=False, show_clarification=False)
+                with cl_col:
+                    st.subheader("Draft clarification")
+                    if question:
+                        st.markdown('<div class="clarification" role="note"><p>' + escape(question) + '</p></div>', unsafe_allow_html=True)
+                        copy_button(question, key="details_copy")
+                    elif record is None:
+                        st.caption("Select a vendor and line with a recorded field to see its drafted clarification.")
+                    else:
+                        st.caption("Nothing to confirm for this cell.")
             st.html("<script>if(location.hash === '#source-evidence') requestAnimationFrame(() => document.getElementById('source-evidence')?.scrollIntoView({behavior:'smooth',block:'start'}));</script>", unsafe_allow_javascript=True)
         elif page == "Ask":
             render_ask(db)

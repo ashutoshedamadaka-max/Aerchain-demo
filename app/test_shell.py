@@ -46,15 +46,15 @@ def test_grid_states_escape_text_and_suppress_unquoted_prices():
                "currency": "INR", "unit": "per <piece>"}
               for v, state, value in [("a", "extracted", 0), ("b", "needs_review", 12),
                                       ("c", "not_quoted", 987), ("d", "missing", 654)]]
-    html = shell.comparison_html(lines, vendors, fields)
-    assert html.count('<span class="status">') == 5
-    for glyph, label in shell.STATES.values():
-        assert f">{glyph} {label}</span>" in html
+    html = shell.comparison_html(lines, vendors, fields, mode="quoted")
+    assert html.count('<a class="cmp-cell"') == 5
+    for glyph, _ in shell.COMPARISON_GLYPHS.values():
+        assert f">{glyph} " in html
     assert "<script>" not in html and "&lt;script&gt;" in html
     assert "INR 0.00" in html and "INR 12.00" in html
     assert "987" not in html and "654" not in html
     assert html.count("not ingested") == 1
-    assert "per &lt;piece&gt;" in html
+    assert "per &lt;piece&gt;" in html                          # now in the cell's tooltip (title attribute), still escaped
 
 
 def test_event_grid_retains_five_columns_and_thirty_rows():
@@ -74,8 +74,9 @@ def test_other_fields_do_not_masquerade_as_unit_prices():
                "state": "extracted", "value": 999}]
     html = shell.comparison_html([{"line_no": 1, "sku": "BOX"}],
                                 [{"vendor_id": "V1", "name": "Vendor"}], fields)
-    assert "not ingested" not in html
-    assert "∅ Missing" in html and "999" not in html
+    glyph, _ = shell.COMPARISON_GLYPHS["missing"]
+    assert "not ingested" not in html                           # V1 is ingested (it has a line_total field); it just has no unit_price
+    assert f"{glyph} No value" in html and "999" not in html
 
 
 def test_truth_database_rejected():
@@ -105,10 +106,11 @@ def test_populated_provenance_dropdowns(empty_db):
     app.query_params["bid_line"] = "1"
     app.run()
     assert app.sidebar.radio[0].value == "Comparison"
+    app.radio(key="cmp_view_mode").set_value("Quoted rates (original currency)").run()   # the grid defaults to Normalized; this test is about quoted evidence
     assert app.selectbox(key="bid_vendor").value == "V1" and app.selectbox(key="bid_line").value == 1
     assert app.code[0].value == "qty 1,000 × 42 = 42,000; vendor states <40,000>"
     assert not app.exception and not app.error
-    assert [s.label for s in app.selectbox] == ["Award scenario", "Award cost basis", "Vendor", "Line", "Draft clarifications for"]
+    assert [s.label for s in app.selectbox] == ["Award scenario", "Award cost basis", "Vendor", "Line"]
     assert app.code[-1].value == "<raw quote> 42.00"
     assert any("Quotation!H10" in t.value for t in app.text)
     assert any('class="needs_review"' in m.value for m in app.markdown)
@@ -116,13 +118,13 @@ def test_populated_provenance_dropdowns(empty_db):
 
     assert any("arith_mismatch" in m.value for m in app.markdown)
     assert any("Confirm rate?" in m.value and 'class="clarification"' in m.value for m in app.markdown)
-    grid = next(m.value for m in app.markdown if 'class="quote-grid"' in m.value)
+    grid = next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value)
     assert grid.count('<td class=') == 5
     app.selectbox(key="bid_vendor").set_value("V2").run()
     assert not app.exception
     assert any("not ingested" in i.value for i in app.info)
     assert not app.code
-    assert next(m.value for m in app.markdown if 'class="quote-grid"' in m.value) == grid
+    assert next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value) == grid
 
     # A newer vendor submission must drive both price and source evidence.
     with sqlite3.connect(empty_db) as conn:
@@ -136,9 +138,9 @@ def test_populated_provenance_dropdowns(empty_db):
     app.selectbox(key="bid_vendor").set_value("V1").run()
     assert app.code[0].value == "revised 43"
     assert any("p2:bbox(1,2,3,4)" in t.value for t in app.text)
-    grid = next(m.value for m in app.markdown if 'class="quote-grid"' in m.value)
+    grid = next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value)
     assert "43.00" in grid and "42.00" not in grid
-    assert grid.count('<span class="status">') == 5
+    assert grid.count('<a class="cmp-cell"') == 5
 
 
     # A cell URL changes both widgets; manual selections still work afterward.
@@ -187,19 +189,20 @@ def test_exact_status_glyphs():
         "extracted": "✓", "needs_review": "?", "not_quoted": "—", "missing": "∅"}
 
 
-def test_settings_row_edits_threshold_on_both_pages(empty_db):
+def test_settings_row_lives_only_on_event(empty_db):
+    """The review block threshold widget is on Event's Settings expander and nowhere else (not duplicated on Comparison)."""
     app = AppTest.from_file(str(ROOT / "app/main.py"), default_timeout=15).run()
-    for page in ("Event", "Comparison"):
-        app.sidebar.radio[0].set_value(page).run()
-        assert not app.exception
-        assert app.number_input[0].value == 5.0 and "5%" in app.number_input[0].label
+    assert not app.exception
+    assert app.number_input[0].value == 5.0 and "5%" in app.number_input[0].label
+    app.sidebar.radio[0].set_value("Comparison").run()
+    assert not app.exception
+    assert not any((n.key or "").startswith("setting_") for n in app.number_input)        # only the "Jump to line" input remains here
+    app.sidebar.radio[0].set_value("Event").run()
     app.number_input[0].set_value(9.0)
-    app.button(key="setting_Comparison_review_block_threshold_pct_save").click().run()
+    app.button(key="setting_Event_review_block_threshold_pct_save").click().run()
     assert not app.exception and app.number_input[0].value == 9.0
     with sqlite3.connect(empty_db) as conn:
         assert conn.execute("SELECT value FROM settings WHERE key='review_block_threshold_pct'").fetchone()[0] == 9.0
-    app.sidebar.radio[0].set_value("Event").run()
-    assert app.number_input[0].value == 9.0
 
 
 @pytest.mark.parametrize("result_status", ["complete", "partial", "unavailable"])
@@ -226,3 +229,41 @@ def test_ask_displays_execution_status_and_evidence(empty_db, monkeypatch, resul
     assert any(result_status.capitalize() in c.value and '2 model requests' in c.value for c in app.caption)
     assert not any('Missing from the store' in w.value for w in app.warning)
     assert any(e.label == 'How this was computed (1 tool call)' for e in app.expander)
+
+
+# ---- Comparison page stat tiles (pure functions, no DB) ----
+def test_all_vendor_clean_requires_every_vendor_extracted():
+    lines = [{"line_no": 1, "annual_qty": 10}, {"line_no": 2, "annual_qty": 10}, {"line_no": 3, "annual_qty": 10}]
+    fields = [
+        {"rfx_line_no": 1, "vendor_id": "A", "field_name": "unit_price", "state": "extracted"},
+        {"rfx_line_no": 1, "vendor_id": "B", "field_name": "unit_price", "state": "extracted"},
+        {"rfx_line_no": 2, "vendor_id": "A", "field_name": "unit_price", "state": "extracted"},
+        {"rfx_line_no": 2, "vendor_id": "B", "field_name": "unit_price", "state": "needs_review"},
+        {"rfx_line_no": 3, "vendor_id": "A", "field_name": "unit_price", "state": "extracted"},
+        # line 3: B has no unit_price row at all (not ingested for this line)
+    ]
+    stats = shell.comparison_stats(lines, ["A", "B"], fields, {})
+    assert stats["total_lines"] == 3
+    assert stats["all_clean"] == 1                    # only line 1: every vendor extracted
+    assert stats["any_flag"] == 1                      # only line 2: B is needs_review; line 3's missing cell carries no state at all
+
+
+def test_any_flag_counts_needs_review_missing_and_not_quoted():
+    lines = [{"line_no": n, "annual_qty": 1} for n in (1, 2, 3, 4)]
+    fields = [{"rfx_line_no": n, "vendor_id": "A", "field_name": "unit_price", "state": state}
+              for n, state in ((1, "needs_review"), (2, "missing"), (3, "not_quoted"), (4, "extracted"))]
+    stats = shell.comparison_stats(lines, ["A"], fields, {})
+    assert stats["any_flag"] == 3 and stats["all_clean"] == 1
+
+
+def test_cheapest_overall_sums_normalized_totals_and_excludes_unpriced_vendors():
+    lines = [{"line_no": 1, "annual_qty": 100}, {"line_no": 2, "annual_qty": 50}]
+    norm_by_pair = {
+        ("A", 1): {"inr_per_piece": 10.0}, ("A", 2): {"inr_per_piece": 20.0},      # A: 100*10 + 50*20 = 2,000
+        ("B", 1): {"inr_per_piece": 8.0}, ("B", 2): {"inr_per_piece": 30.0},       # B: 100*8 + 50*30 = 2,300
+    }
+    stats = shell.comparison_stats(lines, ["A", "B", "C"], [], norm_by_pair)      # C has no normalized price anywhere
+    assert stats["cheapest_vendor"] == "A" and stats["cheapest_total"] == 2000.0
+
+    stats_none = shell.comparison_stats(lines, ["C"], [], norm_by_pair)
+    assert stats_none["cheapest_vendor"] is None and stats_none["cheapest_total"] is None
