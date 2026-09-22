@@ -11,6 +11,7 @@ from math import isfinite
 from statistics import median
 import os
 import json
+import re
 from pathlib import Path
 import sqlite3
 import sys
@@ -230,6 +231,8 @@ def apply_cell_link(vendors: list[dict], lines: list[dict]) -> None:
     st.session_state["page"] = "Comparison"
     st.session_state["bid_vendor"] = vendor_id
     st.session_state["bid_line"] = line_no
+    st.session_state["_open_evidence_dialog"] = True      # a genuinely new cell click, not just a rerun from some other widget
+    st.session_state["_clar_scroll_pending"] = True
 
 
 def sync_bid_selection() -> None:
@@ -254,7 +257,9 @@ def provenance(record: dict | None, *, vendor_ingested: bool, question: str | No
         badges = f'<span>{glyph} {escape(record["state"])}</span>'
         if record.get("reason_code"):
             badges += f'<span>Reason: <code>{escape(record["reason_code"])}</code></span>'
-        st.markdown('<div class="evidence-badges">' + badges + '</div>',
+        badge_style = ('<style>.evidence-badges{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}'
+                       '.evidence-badges span{border:1px solid currentColor;border-radius:18px;padding:5px 12px}</style>')
+        st.markdown(badge_style + '<div class="evidence-badges">' + badges + '</div>',
                     unsafe_allow_html=True)
         if record.get("derivation"):
             st.caption("Derivation")
@@ -270,6 +275,17 @@ def provenance(record: dict | None, *, vendor_ingested: bool, question: str | No
         st.code(record["snippet"] if record.get("snippet") is not None
                 else "No snippet recorded.", language=None, wrap_lines=True)
 
+
+def open_evidence_dialog(vendor_name: str, line_label: str, record: dict | None, vendor_ingested: bool) -> None:
+    """A source-evidence popup for the clicked cell. st.popover cannot be triggered from inside a raw HTML table cell (it must be an actual Streamlit
+    widget in the layout tree), so this uses st.dialog instead: it opens immediately on click, in place of the old scroll-to-a-section-below behaviour,
+    and closes on its own X or on a click outside, same as a popover would."""
+    @st.dialog(f"{vendor_name} — {line_label}", width="large")
+    def _dialog():
+        provenance(record, vendor_ingested=vendor_ingested, heading=False, show_clarification=False)
+        if record and record.get("snippet") is not None:
+            copy_button(record["snippet"], key="evidence_copy")
+    _dialog()
 
 
 REVIEW_COLUMNS = {
@@ -443,7 +459,7 @@ def review_sort_selection() -> tuple[str, str]:
     return requested
 
 
-SCENARIO_LABELS = {"single_vendor": "Award to one vendor", "gated_split": "Split among gated vendors"}
+SCENARIO_LABELS = {"single_vendor": "Single vendor", "gated_split": "Split across vendors"}
 THRESHOLD_TOOLTIP = ("The award engine blocks a recommendation when any single line worth more than X% of event value is in needs_review. "
                      "Below the threshold, uncertain lines show as warnings on the recommendation. Lower to be stricter, raise to be more permissive.")
 
@@ -547,54 +563,89 @@ def render_award_preview(db: Path, scenario: str, basis: str) -> None:
                     st.markdown(line)
 
 
-def render_clarifications(fields: list[dict], lines: list[dict], vendors: list[dict], db: Path) -> None:
-    """One email per vendor: bid clarifications (largest quoted-price exposure first), then questionnaire clarifications (mandatory gates first).
-    Pure aggregation of what is already stored; nothing is written."""
-    st.subheader("Clarifications", anchor="clarifications")
+FIELD_LABELS = {"unit_price": "Unit price", "line_total": "Line total", "declared_liner_gsm": "Declared liner GSM"}
+CLAR_CSS = """
+<style>
+.clar-item {border:1px solid #ddd;border-radius:8px;padding:12px 14px;margin:10px 0;background:#fff;color:#1c2b27}
+.clar-item .clar-meta {font-size:.85rem;opacity:.75;margin:2px 0 8px}
+.clar-pulse {animation:clarPulse 1.8s ease-out 1}
+@keyframes clarPulse {0% {box-shadow:0 0 0 4px rgba(147,101,16,.55)} 100% {box-shadow:0 0 0 0 rgba(147,101,16,0)}}
+</style>
+"""
+
+
+def plain_paragraph(question: str, vendor_name: str) -> str:
+    """The drafted question without its leading '{Vendor}: ' label — redundant once the item already sits under that vendor, or inside an email already
+    addressed to them by name. Capitalises the word that now starts the sentence."""
+    stripped = re.sub(rf"^{re.escape(vendor_name)}\s*[:,]?\s*", "", question or "", count=1)
+    return stripped[:1].upper() + stripped[1:] if stripped else question
+
+
+def open_items_for_vendor(db: Path, vendor_id: str, vendor_name: str, fields: list[dict], lines: list[dict]) -> list[dict]:
+    """Every open item for one vendor — a flagged bid_fields row or a flagged questionnaire answer, each with a drafted question. Read-only aggregation."""
+    by_line = {r["line_no"]: r for r in lines}
+    by_key = {(r["submission_id"], r["rfx_line_no"], r["field_name"]): r for r in fields}
+    items = []
+    rows = [f for f in fields if f["vendor_id"] == vendor_id and f["state"] in ("needs_review", "missing", "not_quoted") and f.get("resolving_question")]
+    for f in sorted(rows, key=lambda f: (f["rfx_line_no"], f["field_id"])):
+        q = clarify.vendor_question(f, vendor_name, by_line, by_key)
+        if not q:
+            continue
+        value = "No value recorded" if f.get("value") is None else fmt.field_value(f["value"], f.get("currency"), f["field_name"])
+        items.append(dict(line=f["rfx_line_no"], label=f"Line {f['rfx_line_no']} — {FIELD_LABELS.get(f['field_name'], f['field_name'])}",
+                          value=value, source=f"{f.get('file_name') or 'Not recorded'} · {f.get('anchor') or 'no anchor recorded'}",
+                          question=plain_paragraph(q, vendor_name)))
+    answers = read_table(db, "SELECT q_no,question,is_gate,state,reason_code,resolving_question,answer_text,anchor,evidence_source FROM questionnaire_answers "
+                             "WHERE vendor_id=? AND state IN ('needs_review','claimed_unsupported') AND resolving_question IS NOT NULL "
+                             "ORDER BY is_gate DESC,q_no", (vendor_id,))
+    for a in answers:
+        q = clarify.vendor_question(a, vendor_name, {}, {})
+        if not q:
+            continue
+        items.append(dict(line=None, label=f"Question {a['q_no']}{' (mandatory gate)' if a['is_gate'] else ''} — {a['question']}",
+                          value=a.get("answer_text") or "No answer recorded", source=a.get("anchor") or a.get("evidence_source") or "Not recorded",
+                          question=plain_paragraph(q, vendor_name)))
+    return items
+
+
+def clarification_email(vendor_name: str, items: list[dict], buyer_name: str) -> str:
+    """The numbered list, as one plain-text email a buyer could paste and send — the same content the on-screen cards show, signed off."""
+    body = [f"Clarifications required — {vendor_name}", "",
+            "The items below could not be finalised on our side. Please review each and confirm the requested details.", ""]
+    for i, item in enumerate(items, 1):
+        body += [f"{i}. {item['label']}", f"   Value: {item['value']} · Source: {item['source']}", f"   {item['question']}", ""]
+    body += ["Regards,", buyer_name.strip() or "Procurement Team"]
+    return "\n".join(body).rstrip() + "\n"
+
+
+def render_vendor_clarifications(fields: list[dict], lines: list[dict], vendors: list[dict], db: Path) -> None:
+    """Every open item for one vendor, in plain business language, in one place: the replacement for the old per-cell Details pane and the old bulk
+    email flow. The vendor dropdown shares session key 'bid_vendor' with the grid's cell links, so clicking a cell selects that vendor here too."""
+    st.header("Vendor clarifications", anchor="vendor-clarifications")
     names = {v["vendor_id"]: v["name"] for v in vendors}
     if not names:
         return
-    by_line = {r["line_no"]: r for r in lines}
-    by_key = {(r["submission_id"], r["rfx_line_no"], r["field_name"]): r for r in fields}
-    vid = st.selectbox("Draft clarifications for", list(names), format_func=names.get, key="clar_vendor")
-    if st.button("Draft clarifications"):
-        try:
-            risk = {r["field_id"]: r["risk"] for r in review_queue(db)}
-        except sqlite3.Error:
-            risk = {}
-        groups = {}                                        # a price and its total can raise the same question; ask it once
-        for f in fields:
-            if f["vendor_id"] != vid or f["state"] not in ("needs_review", "missing") or not f.get("resolving_question"):
-                continue
-            q = clarify.vendor_question(f, names[vid], by_line, by_key)
-            if q:
-                g = groups.setdefault(q, dict(line=f["rfx_line_no"], risk=None, first=f["field_id"]))
-                g["line"] = min(g["line"], f["rfx_line_no"])
-                if risk.get(f["field_id"]) is not None:
-                    g["risk"] = max(g["risk"] or 0, risk[f["field_id"]])
-        ordered = sorted(groups.items(), key=lambda kv: (kv[1]["risk"] is None, -(kv[1]["risk"] or 0), kv[1]["line"], kv[1]["first"]))
-        bid_items = [(f"Line {g['line']} — {clarify.spec(by_line.get(g['line']))}", q) for q, g in ordered]
-        answers = read_table(db, "SELECT q_no,question,is_gate,state,reason_code,resolving_question FROM questionnaire_answers "
-                                 "WHERE vendor_id=? AND state IN ('needs_review','claimed_unsupported') AND resolving_question IS NOT NULL "
-                                 "ORDER BY is_gate DESC,q_no", (vid,))
-        quest_items = [(f"Question {a['q_no']}{' (mandatory gate)' if a['is_gate'] else ''} — {a['question']}", clarify.vendor_question(a, names[vid], {}, {})) for a in answers]
-        quest_items = [(label, q) for label, q in quest_items if q]
-        st.session_state["clarification_draft"] = (vid, clarify.email(names[vid], bid_items, quest_items) if bid_items or quest_items else None)
-    saved = st.session_state.get("clarification_draft")
-    if not saved or saved[0] != vid:
-        return
-    if saved[1] is None:
+    vid = st.selectbox("Select vendor to review", list(names), format_func=names.get, key="bid_vendor")
+    items = open_items_for_vendor(db, vid, names[vid], fields, lines)
+    if not items:
         st.info(f"No open clarifications for {names[vid]}.")
         return
-    with st.container(border=True):
-        shown = saved[1].replace("\n   ", "  \n   ")
-        for heading in ("Bid clarifications", "Questionnaire clarifications"):
-            shown = shown.replace("\n" + heading + "\n", "\n**" + heading + "**\n")
-        st.markdown(shown)                                                 # a hard line break under each item; the copied and downloaded text keep the plain layout
-    copy, download = st.columns([1, 1])
-    with copy:
-        copy_button(saved[1], key="clar_copy")
-    download.download_button("Download .txt", saved[1], file_name=f"clarifications_{vid}.txt", mime="text/plain")
+    buyer_name = st.text_input("Your name (for the email signature)", value=st.session_state.get("clar_buyer_name", "Procurement Team"), key="clar_buyer_name")
+    target_line = st.session_state.get("bid_line") if st.session_state.pop("_clar_scroll_pending", False) else None
+    st.markdown(CLAR_CSS, unsafe_allow_html=True)
+    for i, item in enumerate(items, 1):
+        pulse = " clar-pulse" if item["line"] == target_line else ""
+        st.markdown(f'<div class="clar-item{pulse}" id="clar-item-{i}"><strong>{i}. {escape(item["label"])}</strong>'
+                    f'<div class="clar-meta">Value: {escape(item["value"])} · Source: {escape(item["source"])}</div>'
+                    f'<div>{escape(item["question"])}</div></div>', unsafe_allow_html=True)
+    if target_line is not None and any(item["line"] == target_line for item in items):
+        first = next(i for i, item in enumerate(items, 1) if item["line"] == target_line)
+        st.html(f"<script>document.getElementById('clar-item-{first}')?.scrollIntoView({{behavior:'smooth',block:'center'}});</script>", unsafe_allow_javascript=True)
+    email_text = clarification_email(names[vid], items, buyer_name)
+    copy_col, download_col = st.columns([1, 1])
+    with copy_col:
+        copy_button(email_text, key="clar_copy", label="Copy full email")
+    download_col.download_button("Download as .txt", email_text, file_name=f"clarifications_{vid}.txt", mime="text/plain")
 
 
 def render_processing(db: Path, vendor_count: int, line_count: int) -> None:
@@ -1096,10 +1147,11 @@ def main() -> None:
                 tiles[3].metric("Cheapest overall", "not available")
 
             with st.expander("Award note export", expanded=True):
-                scenario = st.selectbox("Award scenario", list(SCENARIO_LABELS), format_func=SCENARIO_LABELS.get)
-                cost_basis = st.selectbox("Award cost basis", ["landed", "ex_freight"])
+                st.caption("Award recommendation is on an ex-freight basis. Freight isn't quoted comparably across vendors, so it's excluded for this demo.")
+                scenario_label = st.radio("Award scenario", list(SCENARIO_LABELS.values()), horizontal=True)
+                scenario = next(k for k, v in SCENARIO_LABELS.items() if v == scenario_label)
+                cost_basis = "ex_freight"                          # the landed basis stays fully implemented in the engine; this page just doesn't expose it
                 render_award_preview(db, scenario, cost_basis)
-                st.caption("Uses the existing award engine and recorded gate results. Missing data and blockers remain explicit in the note.")
                 saved = st.session_state.get("award_note_export")
                 if saved and saved[:3] == (str(db), scenario, cost_basis):
                     for gap in saved[4]:
@@ -1121,33 +1173,15 @@ def main() -> None:
             if target := st.session_state.pop("cmp_jump_target", None):
                 st.html(f"<script>document.getElementById('cmp-line-{target}')?.scrollIntoView({{behavior:'smooth',block:'center'}});</script>", unsafe_allow_javascript=True)
 
+            if st.session_state.pop("_open_evidence_dialog", False):
+                dvendor, dline = st.session_state.get("bid_vendor"), st.session_state.get("bid_line")
+                if dvendor in vendor_names and dline in line_names:
+                    drecord = unit_price_index(fields).get((dline, dvendor))
+                    open_evidence_dialog(vendor_names[dvendor], line_names[dline], drecord, any(r["vendor_id"] == dvendor for r in fields))
+
             st.divider()
             with st.container(border=True):
-                st.header("Details", anchor="source-evidence")
-                sel_left, sel_right = st.columns(2)
-                vendor_id = sel_left.selectbox("Vendor", list(vendor_names),
-                                               format_func=vendor_names.get, key="bid_vendor",
-                                               on_change=sync_bid_selection)
-                line_no = sel_right.selectbox("Line", list(line_names),
-                                              format_func=line_names.get, disabled=not lines,
-                                              key="bid_line", on_change=sync_bid_selection)
-                record = unit_price_index(fields).get((line_no, vendor_id))
-                by_key = {(r["submission_id"], r["rfx_line_no"], r["field_name"]): r for r in fields}
-                question = clarify.vendor_question(record, vendor_names.get(vendor_id, vendor_id), {r["line_no"]: r for r in lines}, by_key) if record else None
-                ev_col, cl_col = st.columns(2)
-                with ev_col:
-                    st.subheader("Source evidence")
-                    provenance(record, vendor_ingested=any(r["vendor_id"] == vendor_id for r in fields), heading=False, show_clarification=False)
-                with cl_col:
-                    st.subheader("Draft clarification")
-                    if question:
-                        st.markdown('<div class="clarification" role="note"><p>' + escape(question) + '</p></div>', unsafe_allow_html=True)
-                        copy_button(question, key="details_copy")
-                    elif record is None:
-                        st.caption("Select a vendor and line with a recorded field to see its drafted clarification.")
-                    else:
-                        st.caption("Nothing to confirm for this cell.")
-            st.html("<script>if(location.hash === '#source-evidence') requestAnimationFrame(() => document.getElementById('source-evidence')?.scrollIntoView({behavior:'smooth',block:'start'}));</script>", unsafe_allow_javascript=True)
+                render_vendor_clarifications(fields, lines, grid_vendors, db)
         elif page == "Ask":
             render_ask(db)
         elif page == "Evals":

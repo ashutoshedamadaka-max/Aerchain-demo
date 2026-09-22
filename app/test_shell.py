@@ -84,7 +84,7 @@ def test_truth_database_rejected():
         shell.read_table(ROOT / "dataset/truth/truth.sqlite", "SELECT 1")
 
 
-def test_populated_provenance_dropdowns(empty_db):
+def test_clicking_a_cell_opens_the_evidence_dialog_and_selects_the_vendor_below(empty_db):
     with sqlite3.connect(empty_db) as conn:
         conn.execute("""INSERT INTO rfx_lines VALUES
             (1,'TEST-SKU','RSC',500,350,300,5,'BC',150,'150/120/150/120/150',
@@ -105,28 +105,36 @@ def test_populated_provenance_dropdowns(empty_db):
     app.query_params["bid_vendor"] = "V1"
     app.query_params["bid_line"] = "1"
     app.run()
-    assert app.sidebar.radio[0].value == "Comparison"
-    app.radio(key="cmp_view_mode").set_value("Quoted rates (original currency)").run()   # the grid defaults to Normalized; this test is about quoted evidence
-    assert app.selectbox(key="bid_vendor").value == "V1" and app.selectbox(key="bid_line").value == 1
-    assert app.code[0].value == "qty 1,000 × 42 = 42,000; vendor states <40,000>"
     assert not app.exception and not app.error
-    assert [s.label for s in app.selectbox] == ["Award scenario", "Award cost basis", "Vendor", "Line"]
+    assert app.sidebar.radio[0].value == "Comparison"
+    assert len(app.get("dialog")) == 1                                           # a fresh click opens the evidence dialog, not a scroll
+    assert app.code[0].value == "qty 1,000 × 42 = 42,000; vendor states <40,000>"
     assert app.code[-1].value == "<raw quote> 42.00"
     assert any("Quotation!H10" in t.value for t in app.text)
     assert any('class="needs_review"' in m.value for m in app.markdown)
-
-
     assert any("arith_mismatch" in m.value for m in app.markdown)
-    assert any("Confirm rate?" in m.value and 'class="clarification"' in m.value for m in app.markdown)
+    assert [s.label for s in app.selectbox] == ["Select vendor to review"]        # no more Vendor/Line pair; one shared dropdown below
+    assert app.selectbox(key="bid_vendor").value == "V1"
     grid = next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value)
     assert grid.count('<td class=') == 5
-    app.selectbox(key="bid_vendor").set_value("V2").run()
-    assert not app.exception
-    assert any("not ingested" in i.value for i in app.info)
-    assert not app.code
-    assert next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value) == grid
 
-    # A newer vendor submission must drive both price and source evidence.
+    # Switching the grid's view mode (not a cell click) reruns the page and closes the dialog; the grid follows the new mode.
+    app.radio(key="cmp_view_mode").set_value("Quoted rates (original currency)").run()
+    assert not app.get("dialog")
+    grid = next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value)
+    assert "42.00" in grid
+
+    # A second click, on a vendor with no data at all: the dialog reopens and says so, and the shared dropdown follows it.
+    app.query_params["bid_vendor"] = "V2"
+    app.query_params["bid_line"] = "1"
+    app.run()
+    assert not app.exception
+    assert len(app.get("dialog")) == 1
+    assert any("not ingested" in i.value for i in app.info)
+    assert app.selectbox(key="bid_vendor").value == "V2"
+    assert any("No open clarifications for" in i.value for i in app.info)
+
+    # A newer submission must drive the dialog's price and its own evidence, and clear the (now-extracted) clarification.
     with sqlite3.connect(empty_db) as conn:
         conn.execute("""INSERT INTO submissions
             (submission_id,vendor_id,file_name,format,received_on,expired_at_eval,eval_date,currency)
@@ -135,28 +143,70 @@ def test_populated_provenance_dropdowns(empty_db):
             (submission_id,rfx_line_no,field_name,value,unit,basis,currency,state,anchor,snippet)
             VALUES ('REV',1,'unit_price',43,'INR/piece','per_piece','INR',
                     'extracted','p2:bbox(1,2,3,4)','revised 43')""")
-    app.selectbox(key="bid_vendor").set_value("V1").run()
+    app.query_params["bid_vendor"] = "V1"
+    app.query_params["bid_line"] = "1"
+    app.run()
     assert app.code[0].value == "revised 43"
     assert any("p2:bbox(1,2,3,4)" in t.value for t in app.text)
     grid = next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value)
     assert "43.00" in grid and "42.00" not in grid
-    assert grid.count('<a class="cmp-cell"') == 5
+    assert any("No open clarifications for" in i.value for i in app.info)         # the only flagged field was superseded by the extracted revision
 
-
-    # A cell URL changes both widgets; manual selections still work afterward.
-    app.query_params["bid_vendor"] = "V2"
-    app.query_params["bid_line"] = "1"
-    app.run()
-    assert app.selectbox(key="bid_vendor").value == "V2" and app.selectbox(key="bid_line").value == 1
-    assert any("not ingested" in i.value for i in app.info)
-    app.selectbox(key="bid_vendor").set_value("V1").run()
-    assert app.selectbox(key="bid_vendor").value == "V1"
-    assert app.code[0].value == "revised 43"
-    assert not any('class="clarification"' in m.value for m in app.markdown)
-    assert not any('class="evidence-badges"' in m.value and "Reason:" in m.value
-                   for m in app.markdown)
+    # Choosing a vendor manually (not via a click) does not reopen the dialog.
+    app.selectbox(key="bid_vendor").set_value("V2").run()
+    assert not app.get("dialog")
     app.sidebar.radio[0].set_value("Event").run()
     assert app.sidebar.radio[0].value == "Event"
+
+
+def test_vendor_clarifications_aggregate_every_open_item_and_the_email_has_no_state_jargon(empty_db):
+    """Bid-field and questionnaire items for one vendor, in one list; the copyable email is plain business language."""
+    with sqlite3.connect(empty_db) as conn:
+        for n, qty in ((1, 1000), (2, 2000)):
+            conn.execute("""INSERT INTO rfx_lines VALUES
+                (?,?,'RSC',500,350,300,5,'BC',150,'150/120/150/120/150',20,'plain',?,'piece',1.131,0.902538,0)""", (n, f"SKU-{n}", qty))
+        conn.execute("INSERT INTO vendors VALUES ('V1','Sahyadri Test Ltd','test','xlsx','test','test',0,0,0,0)")
+        conn.execute("""INSERT INTO submissions VALUES
+            ('S1','V1','sample.xlsx','xlsx','2026-03-11',NULL,NULL,0,'2026-03-11',NULL,'INR',NULL,NULL,NULL)""")
+        conn.executemany("""INSERT INTO bid_fields
+            (submission_id,rfx_line_no,field_name,value,unit,basis,currency,state,reason_code,anchor,snippet,resolving_question)
+            VALUES ('S1',?,?,?,?,?,?,?,?,?,?,?)""", [
+            (1, "unit_price", 42, "INR/piece", "per_piece", "INR", "needs_review", "arith_mismatch", "Quotation!H10", "42.00", "Confirm rate?"),
+            (2, "unit_price", None, None, None, None, "missing", "reference_unresolved", "Quotation!H11", "same as last year", "What was FY25 rate?"),
+            (1, "line_total", 999, None, None, "INR", "extracted", None, "Quotation!K10", "999", None),   # not open: not a factor in the count
+        ])
+        conn.execute("""INSERT INTO questionnaire_answers
+            (vendor_id,q_no,question,is_gate,gate_code,answer_text,state,reason_code,resolving_question)
+            VALUES ('V1',3,'Do you hold FSC Chain-of-Custody certification?',1,'G3','','claimed_unsupported','no_attachment',
+                    'V1: you state you hold FSC chain-of-custody certificate but no supporting document was attached. Please send the current certificate, showing its expiry date.')""")
+    app = AppTest.from_file(str(ROOT / "app/main.py"), default_timeout=15).run()
+    app.sidebar.radio[0].set_value("Comparison").run()
+    assert not app.exception and not app.error
+    assert app.selectbox(key="bid_vendor").value == "V1"
+    items = [m.value for m in app.markdown if 'class="clar-item' in m.value]
+    assert len(items) == 3                                                       # 2 bid_fields (not the extracted line_total) + 1 questionnaire answer
+    assert any("Line 1" in i and "Unit price" in i for i in items)
+    assert any("Line 2" in i and "Unit price" in i for i in items)
+    assert any("Question 3" in i for i in items)
+    jargon = ("needs_review", "not_quoted", "claimed_unsupported", "reference_unresolved", "arith_mismatch", "no_attachment")
+    assert not any(term in i for i in items for term in jargon)
+
+    assert any(b.label == "Download as .txt" for b in app.download_button)       # "Copy full email" is a JS button inside a components.html iframe, not an st.button
+
+    # AppTest cannot read a download_button's file bytes; check the same email text through the functions the page calls to build it.
+    with sqlite3.connect(empty_db) as conn:
+        conn.row_factory = sqlite3.Row
+        db_fields = [dict(r) for r in conn.execute("""SELECT b.field_id,b.field_name,b.rfx_line_no,b.value,b.unit,b.basis,b.currency,b.state,b.reason_code,
+                                                              b.anchor,b.snippet,b.resolving_question,s.vendor_id,s.submission_id,s.file_name
+                                                       FROM bid_fields b JOIN submissions s USING(submission_id)""")]
+        db_lines = [dict(r) for r in conn.execute("SELECT * FROM rfx_lines")]
+    from app.main import open_items_for_vendor, clarification_email
+    email_items = open_items_for_vendor(empty_db, "V1", "Sahyadri Test Ltd", db_fields, db_lines)
+    assert len(email_items) == 3
+    email = clarification_email("Sahyadri Test Ltd", email_items, "Priya Nair")
+    assert "Clarifications required" in email and "Priya Nair" in email
+    assert not any(term in email for term in jargon)
+    assert email.count("V1: ") == 0                                              # the redundant per-item vendor prefix is stripped
 
 
 @pytest.mark.parametrize("vendor,line", [("UNKNOWN","1"),("V1","bad"),("V1","999"),("V1","")])
