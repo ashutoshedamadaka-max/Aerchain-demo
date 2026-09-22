@@ -25,7 +25,7 @@ def test_save_refreshes_the_cached_export(award_db):
     with sqlite3.connect(award_db) as con:
         assert settings.get(con,'review_block_threshold_pct') == 0.5
     app.sidebar.radio[0].set_value('Comparison').run()
-    assert not any((n.key or '').startswith('setting_') for n in app.number_input)        # not duplicated on Comparison (only "Jump to line" remains)
+    assert not any((n.key or '').startswith('setting_') for n in app.number_input)        # not duplicated on Comparison (no threshold control here)
     assert 'recommendable: False' in app.session_state['award_note_export'][3]            # unaffected by which page is showing
 
 

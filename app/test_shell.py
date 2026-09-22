@@ -118,11 +118,12 @@ def test_clicking_a_cell_opens_the_evidence_dialog_and_selects_the_vendor_below(
     grid = next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value)
     assert grid.count('<td class=') == 5
 
-    # Switching the grid's view mode (not a cell click) reruns the page and closes the dialog; the grid follows the new mode.
-    app.radio(key="cmp_view_mode").set_value("Quoted rates (original currency)").run()
+    # A rerun closes the one-shot dialog; the page always shows normalized rates.
+    app.run()
     assert not app.get("dialog")
-    grid = next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value)
-    assert "42.00" in grid
+    assert not any(r.label == "View" for r in app.radio)
+    assert not any(n.label == "Jump to line" for n in app.number_input)
+    assert not any(b.label == "Go" for b in app.button)
 
     # A second click, on a vendor with no data at all: the dialog reopens and says so, and the shared dropdown follows it.
     app.query_params["bid_vendor"] = "V2"
@@ -149,7 +150,7 @@ def test_clicking_a_cell_opens_the_evidence_dialog_and_selects_the_vendor_below(
     assert app.code[0].value == "revised 43"
     assert any("p2:bbox(1,2,3,4)" in t.value for t in app.text)
     grid = next(m.value for m in app.markdown if 'class="cmp-grid"' in m.value)
-    assert "43.00" in grid and "42.00" not in grid
+    assert "43.00" not in grid and "42.00" not in grid  # no normalized record in this fixture; raw rate stays in evidence
     assert any("No open clarifications for" in i.value for i in app.info)         # the only flagged field was superseded by the extracted revision
 
     # Choosing a vendor manually (not via a click) does not reopen the dialog.
@@ -246,7 +247,7 @@ def test_settings_row_lives_only_on_event(empty_db):
     assert app.number_input[0].value == 5.0 and "5%" in app.number_input[0].label
     app.sidebar.radio[0].set_value("Comparison").run()
     assert not app.exception
-    assert not any((n.key or "").startswith("setting_") for n in app.number_input)        # only the "Jump to line" input remains here
+    assert not any((n.key or "").startswith("setting_") for n in app.number_input)        # no threshold control on Comparison
     app.sidebar.radio[0].set_value("Event").run()
     app.number_input[0].set_value(9.0)
     app.button(key="setting_Event_review_block_threshold_pct_save").click().run()

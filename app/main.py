@@ -550,9 +550,19 @@ def render_award_preview(db: Path, scenario: str, basis: str) -> None:
         except Exception as exc:                                 # a display panel must not take the page down
             st.caption(f"Preview unavailable: {exc}")
             return
-        {"error": st.error, "success": st.success, "warning": st.warning}.get(model["tone"], st.markdown)("**" + model["header"] + "**")
+        {"error": st.error, "success": st.success, "warning": st.warning}.get(model["tone"], st.markdown)(model["header"])
         for section in model["sections"]:
-            if section[0] == "table":
+            if section[0] == "saving_callout":
+                with st.container(border=True):
+                    left, right = st.columns(2)
+                    for column, label, amount, color, background in (
+                        (left, "On paper", section[1], "#35674b", "#edf5ef"),
+                        (right, "In reality", section[2], "#805500", "#fff3cf"),
+                    ):
+                        column.caption(label)
+                        column.markdown(f'<div style="font-size:1.65rem;font-weight:600;color:{color};background:{background};padding:12px;border-radius:6px">{escape(amount)}</div>', unsafe_allow_html=True)
+                    st.caption(section[3])
+            elif section[0] == "table":
                 st.markdown("**" + section[1] + "**")
                 st.table([dict(zip(section[2], row)) for row in section[3]])
             elif section[0] == "warnings":
@@ -1143,11 +1153,16 @@ def main() -> None:
             if stats["cheapest_vendor"]:
                 tiles[3].metric("Cheapest overall", f"{vendor_names.get(stats['cheapest_vendor'], stats['cheapest_vendor'])} ({stats['cheapest_vendor']})",
                                 delta=award_words.crore(stats["cheapest_total"]), delta_color="off")
+                with closing(sqlite3.connect(db.as_uri() + "?mode=ro", uri=True)) as con:
+                    from src.extract.questionnaire import gate_results
+                    _, gate_detail = gate_results(con)
+                if any(g["status"] == "fail" for g in gate_detail.get(stats["cheapest_vendor"], {}).values()):
+                    tiles[3].caption("⚠ Not eligible — fails gate checks")
             else:
                 tiles[3].metric("Cheapest overall", "not available")
 
-            with st.expander("Award note export", expanded=True):
-                st.caption("Award recommendation is on an ex-freight basis. Freight isn't quoted comparably across vendors, so it's excluded for this demo.")
+            with st.expander("Award recommendation", expanded=True):
+                st.caption(award_words.BASIS_LINE["ex_freight"])
                 scenario_label = st.radio("Award scenario", list(SCENARIO_LABELS.values()), horizontal=True)
                 scenario = next(k for k, v in SCENARIO_LABELS.items() if v == scenario_label)
                 cost_basis = "ex_freight"                          # the landed basis stays fully implemented in the engine; this page just doesn't expose it
@@ -1158,20 +1173,11 @@ def main() -> None:
                         st.warning(gap)
                     st.download_button("Download award_note.md", saved[3], file_name="award_note.md", mime="text/markdown")
 
-            view = st.radio("View", ["Normalized (₹/piece ex-freight)", "Quoted rates (original currency)"], horizontal=True, key="cmp_view_mode")
-            mode = "normalized" if view.startswith("Normalized") else "quoted"
             st.caption("✓ extracted (clean) · ⚠ needs_review (amber border) · ✗ missing (red border) · – not_quoted")
-            st.caption("Click any cell to see where the number came from and the drafted question the buyer would send if it's uncertain. "
-                       "Hover a cell for its unit, basis or comparability note.")
-            jump_col, go_col, _ = st.columns([1, 1, 3])
-            jump_to = jump_col.number_input("Jump to line", min_value=1, max_value=max(len(lines), 1), step=1, key="cmp_jump_line")
-            if go_col.button("Go", key="cmp_jump_go"):
-                st.session_state["cmp_jump_target"] = jump_to
-            st.markdown(comparison_html(lines, grid_vendors, fields, mode, norm_by_pair), unsafe_allow_html=True)
+            st.caption("Click any cell to see where the number came from and the drafted question the buyer would send if it's uncertain.")
+            st.markdown(comparison_html(lines, grid_vendors, fields, "normalized", norm_by_pair), unsafe_allow_html=True)
             if not lines:
                 st.info("The comparison grid is waiting for event lines.")
-            if target := st.session_state.pop("cmp_jump_target", None):
-                st.html(f"<script>document.getElementById('cmp-line-{target}')?.scrollIntoView({{behavior:'smooth',block:'center'}});</script>", unsafe_allow_javascript=True)
 
             if st.session_state.pop("_open_evidence_dialog", False):
                 dvendor, dline = st.session_state.get("bid_vendor"), st.session_state.get("bid_line")
