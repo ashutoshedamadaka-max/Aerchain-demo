@@ -152,7 +152,10 @@ CELL_CARD_SCRIPT = """
  card.addEventListener('pointerenter',()=>clearTimeout(timer));card.addEventListener('pointerleave',later);
  card.addEventListener('focusin',()=>{clearTimeout(timer);pinned=true;});
  card.addEventListener('click',async e=>{if(e.target.closest('[data-close]')){const cell=active;close();cell?.focus();close();}
- if(e.target.closest('[data-copy]')){try{await navigator.clipboard.writeText(card.querySelector('.cmp-evidence').innerText);e.target.textContent='Copied';}catch{e.target.textContent='Select text to copy';}}});
+ const copyBtn=e.target.closest('[data-copy]');
+ if(copyBtn){const snips=card.querySelectorAll('.cmp-snippet');const snippet=snips[snips.length-1]?.textContent||'';const original=copyBtn.textContent;
+ try{await navigator.clipboard.writeText(snippet);copyBtn.textContent='Copied';}catch{copyBtn.textContent='Select text to copy';}
+ setTimeout(()=>{copyBtn.textContent=original;},1500);}});
  const abort=new AbortController();
  document.addEventListener('pointerdown',e=>{if(!grid.isConnected){abort.abort();return;}if(!card.contains(e.target)&&!e.target.closest('.cmp-cell'))close();},{signal:abort.signal});
  document.addEventListener('keydown',e=>{if(e.key==='Escape')close();},{signal:abort.signal});
@@ -178,10 +181,10 @@ def cell_evidence_html(vendor: dict, line: dict, record: dict, value: str, label
         body.append(f'<details><summary>Derivation</summary><pre>{text(record["derivation"])}</pre></details>')
     body.append(f'<small>Source: {text(record.get("file_name") or "not available")} · {text(record.get("anchor") or "anchor not available")}</small>')
     snippet = record.get("snippet") or "No source snippet recorded."
-    body.append(f'<pre>{text(snippet[:180])}{"…" if len(snippet) > 180 else ""}</pre>')
+    body.append(f'<pre class="cmp-snippet">{text(snippet[:180])}{"…" if len(snippet) > 180 else ""}</pre>')
     body.append('<details><summary>Full source and rate details</summary>')
     if len(snippet) > 180:
-        body.append(f'<pre>{text(snippet)}</pre>')
+        body.append(f'<pre class="cmp-snippet">{text(snippet)}</pre>')
     body.append(f'<small>Quoted value: {text(record.get("value") if record.get("value") is not None else "not available")} {text(record.get("currency") or "")} · {text(record.get("unit") or record.get("basis") or "")}</small>')
     body.append(f'<small>{text(" · ".join(tooltip))}</small></details></div><button data-copy>Copy evidence</button>')
     return ''.join(body)
@@ -304,7 +307,6 @@ def apply_cell_link(vendors: list[dict], lines: list[dict]) -> None:
     st.session_state["page"] = "Comparison"
     st.session_state["bid_vendor"] = vendor_id
     st.session_state["bid_line"] = line_no
-    st.session_state["_open_evidence_dialog"] = True      # a genuinely new cell click, not just a rerun from some other widget
     st.session_state["_clar_scroll_pending"] = True
 
 
@@ -315,50 +317,6 @@ def sync_bid_selection() -> None:
     if vendor_id is not None and line_no is not None:
         st.query_params.update({"bid_vendor": vendor_id, "bid_line": str(line_no)})
         st.session_state["_last_bid_link"] = (vendor_id, str(line_no))
-
-
-def provenance(record: dict | None, *, vendor_ingested: bool, question: str | None = None, heading: bool = True, show_clarification: bool = True) -> None:
-    """Display only evidence recorded on the selected unit-price field. show_clarification=False leaves the drafted question to a caller that shows it elsewhere."""
-    if heading:
-        st.subheader("Source evidence", anchor="source-evidence")
-    if record is None:
-        st.info("Missing — no unit-price field recorded for this line." if vendor_ingested
-                else "not ingested — no bid fields have been ingested for this vendor.")
-        return
-    glyph, _ = STATES.get(record["state"], STATES["missing"])
-    with st.container(border=True):
-        badges = f'<span>{glyph} {escape(record["state"])}</span>'
-        if record.get("reason_code"):
-            badges += f'<span>Reason: <code>{escape(record["reason_code"])}</code></span>'
-        badge_style = ('<style>.evidence-badges{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}'
-                       '.evidence-badges span{border:1px solid currentColor;border-radius:18px;padding:5px 12px}</style>')
-        st.markdown(badge_style + '<div class="evidence-badges">' + badges + '</div>',
-                    unsafe_allow_html=True)
-        if record.get("derivation"):
-            st.caption("Derivation")
-            st.code(clarify.plain_derivation(record["derivation"]), language=None, wrap_lines=True)
-        if show_clarification and (question or record.get("resolving_question")):
-            st.markdown('<div class="clarification" role="note">'
-                        '<strong>Draft clarification to vendor</strong><p>'
-                        + escape(question or record["resolving_question"]) + '</p></div>',
-                        unsafe_allow_html=True)
-        st.text("File: " + (record.get("file_name") or "Not recorded"))
-        st.text("Source anchor: " + (record.get("anchor") or "Not recorded"))
-        st.caption("Verbatim snippet")
-        st.code(record["snippet"] if record.get("snippet") is not None
-                else "No snippet recorded.", language=None, wrap_lines=True)
-
-
-def open_evidence_dialog(vendor_name: str, line_label: str, record: dict | None, vendor_ingested: bool) -> None:
-    """A source-evidence popup for the clicked cell. st.popover cannot be triggered from inside a raw HTML table cell (it must be an actual Streamlit
-    widget in the layout tree), so this uses st.dialog instead: it opens immediately on click, in place of the old scroll-to-a-section-below behaviour,
-    and closes on its own X or on a click outside, same as a popover would."""
-    @st.dialog(f"{vendor_name} — {line_label}", width="large")
-    def _dialog():
-        provenance(record, vendor_ingested=vendor_ingested, heading=False, show_clarification=False)
-        if record and record.get("snippet") is not None:
-            copy_button(record["snippet"], key="evidence_copy")
-    _dialog()
 
 
 REVIEW_COLUMNS = {
@@ -1023,17 +981,83 @@ def eval_table(rows: list[dict], numeric: tuple[str, ...] = ()) -> None:
     st.markdown(''.join(parts) + '</tbody></table></div>', unsafe_allow_html=True)
 
 
+def render_activity_budgets(rows: list[dict]) -> None:
+    from app.eval_budgets import budget_result
+    st.markdown("**Response speed and estimated cost**")
+    with st.expander("Budget targets"):
+        a, b = st.columns(2)
+        seconds = a.number_input("Seconds per interaction", min_value=1.0, value=60.0, step=5.0, key="eval_latency_budget")
+        usd = b.number_input("USD per interaction", min_value=0.001, value=0.10, step=0.01, format="%.3f", key="eval_cost_budget")
+        st.caption("Default targets: 60 seconds and $0.10, selected by the demo owner. Edits apply to this browser session and re-check recorded interactions; they do not alter runtime limits or billing.")
+    st.caption(f"Target: within {seconds:g} seconds and ${usd:.2f} per question. These checks flag overruns; they do not stop a conversation.")
+    if not rows:
+        st.caption("Budget status: not evaluated — no recorded interactions yet.")
+        return
+    checks = [budget_result(r, seconds, usd) for r in rows]
+    a, b, c = st.columns(3)
+    a.metric("Within both targets", sum(r["overall"] == "pass" for r in checks))
+    b.metric("Over target", sum(r["overall"] == "over budget" for r in checks))
+    c.metric("Not enough usage data", sum(r["overall"] == "unknown" for r in checks))
+    latest = checks[0]
+    labels = {"pass": "Within target", "over budget": "Over target", "unknown": "Not enough usage data"}
+    observed = rows[0]
+    elapsed = "not available" if observed['elapsed_s'] is None else f"{observed['elapsed_s']:.1f} seconds"
+    cost = "not available" if observed['cost_usd'] is None else f"${observed['cost_usd']:.4f}"
+    st.write(f"Latest question — response time: **{elapsed} · {labels[latest['latency']]}**; estimated cost: **{cost} · {labels[latest['cost']]}**")
+    st.caption("All recorded attempts are checked, including refusals and failures. A budget pass is not a quality pass. Missing or partially metered cost cannot pass; a recorded subtotal above the limit already fails it. Cost uses the repository's price snapshot, not current billing.")
+
+
+def render_normalization_results(db: Path) -> None:
+    from app.normalization_report import REPORT, fingerprint
+    with st.container(border=True):
+        st.markdown("### Price conversion — are quotes compared on the same basis?")
+        try:
+            report = json.loads(REPORT.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            st.info("No normalization result recorded. The offline grader must run before this section can report results.")
+            return
+        st.write("Checks conversion from per-100, per-kg and foreign-currency quotes into rupees per piece against known reference values.")
+        st.caption(f"Recorded: {report['generated_at'][:10]} · Offline check; no model calls")
+        try:
+            matches = fingerprint(db) == report['norm_prices_sha256']
+        except (sqlite3.Error, OSError):
+            matches = False
+        if not matches:
+            st.warning("Current normalized data does not match this recorded run, or could not be checked. Results below are historical.")
+        else:
+            st.caption("The saved prices match the data checked in this report.")
+        a, b, c = st.columns(3)
+        a.metric("Prices checked", report['fields'])
+        b.metric("Price differences", report['price_differences'])
+        c.metric("Comparability differences", report['comparability_differences'])
+        details = report.get('differences')
+        if details is not None:
+            overlap = sum(r['price_difference'] and r['comparability_difference'] for r in details)
+            missing = sum(r['missing_price'] for r in details)
+            st.write(f"These counts cover **{len(details)} distinct vendor-line pairs**; {overlap} appear in both categories. "
+                     f"{missing} have no converted price where the reference has one.")
+        st.caption("A missing price is different from an incorrect calculation. These checks alone do not establish whether leaving a price unresolved was justified.")
+        with st.expander("How this was checked and detailed results"):
+            st.caption(f"Source: {report['source']} · Numeric tolerance: ₹{report['tolerance_inr_per_piece']:g}/piece. Checks saved prices and whether they are marked comparable against held-out reference values, including missing values.")
+            st.caption("The data fingerprint checks saved normalized rows only; it does not establish that the code or reference truth is unchanged.")
+            eval_table([{"Submission": r['submission'], "Checked": r['fields'], "Comparability differences": r['comparability_differences'],
+                         "Max delta among matching prices (₹/piece)": r['max_matching_price_delta']} for r in report['vendors']])
+            st.caption("The maximum delta excludes mismatched or missing prices; it is not the worst error across all rows. The original grader prints only a sample of differing rows.")
+            st.code(report['grader_output'], language=None, wrap_lines=True)
+
+
 def render_live_activity(db: Path) -> None:
     """Operational observations from real Ask usage, never model-graded accuracy."""
     from app import live_activity
     with st.container(border=True):
         st.subheader("Live analyst activity")
-        st.caption("Normal Ask interactions only · No extra evaluation model calls · Correctness not assessed")
+        st.info("A completed answer is not necessarily a correct answer. Live usage tracks completion, response time and estimated cost; it does not grade factual accuracy.")
         try:
             rows = live_activity.read(db)
         except sqlite3.Error:
             st.warning("Live activity could not be read. Recorded benchmark results remain available below.")
             return
+        render_activity_budgets(rows)
         if not rows:
             st.info("No Ask interactions recorded since activity tracking was enabled. Use Ask normally, then open Evals or select Refresh.")
             return
@@ -1064,11 +1088,11 @@ def render_evals(db: Path) -> None:
     """Present recorded benchmark results; never run graders or paid model calls."""
     st.title("Evals")
     st.write("Did we read the evidence correctly, flag uncertainty, and apply the buying rules correctly?")
-    render_live_activity(db)
     try:
         snap = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         st.info("No eval snapshot yet. Run scripts/snapshot_evals.py to record results. This page only displays them.")
+        render_live_activity(db)
         return
     st.caption(f"Recorded snapshot: {snap['generated_at']} · Controlled synthetic sourcing event · Not a live evaluation")
     ex, ph, qn, aw, tt = (snap[k] for k in ("extraction", "photo", "questionnaire", "award", "tests"))
@@ -1087,6 +1111,8 @@ def render_evals(db: Path) -> None:
         columns[3].metric("Injected faults detected", f"{seeded} / {seeded}" if seeded_ok and seeded is not None else "Not confirmed")
         columns[3].caption("Validation checks on a deliberately corrupted scratch database; not supplier gates.")
         st.caption("Observed on this benchmark only. Each stage has a different grading rule; these are not a combined accuracy score.")
+
+    render_live_activity(db)
 
     with st.expander("About this recorded run"):
         st.caption("The extraction pipeline does not read the reference truth database. Graders compare its saved output with that reference separately.")
@@ -1142,6 +1168,8 @@ def render_evals(db: Path) -> None:
             if attachments:
                 eval_table([{"Attachment check": k.replace("_", " ").capitalize(), "Count": v} for k, v in attachments.items()])
 
+    render_normalization_results(db)
+
     st.subheader("Business-rule and software checks")
     with st.container(border=True):
         st.markdown("### Award engine — do the buying rules hold?")
@@ -1166,10 +1194,9 @@ def render_evals(db: Path) -> None:
 
     with st.container(border=True):
         st.subheader("Not yet measured in this report")
-        st.markdown("- **Normalization:** a separate grader exists, but its results are not included in this snapshot.\n"
-                    "- **Analyst answer quality:** fixed questions and refusal tests exist; this report has no systematic score for answer facts, citations or completion.\n"
+        st.markdown("- **Analyst answer quality:** fixed questions and refusal tests exist; this report has no systematic score for answer facts, citations or completion.\n"
                     "- **Robustness:** no repeated-run variance or unseen-document benchmark is recorded here.\n"
-                    "- **Operations:** no latency/cost budget results or history across versions are recorded here.")
+                    "- **Operations:** live Ask budget checks are shown above; pipeline-wide budgets and durable history across versions are not yet measured.")
         st.caption("Next evaluation priorities: grade the fixed Ask questions, measure whether review flags were justified, then test unseen document variations and repeated runs within an explicit budget.")
 
 
@@ -1326,7 +1353,6 @@ def main() -> None:
                 norms = []
             norm_by_pair = {(r["vendor_id"], r["rfx_line_no"]): r for r in norms}
             vendor_names = {v["vendor_id"]: v["name"] for v in grid_vendors}
-            line_names = {r["line_no"]: f'{r["line_no"]} · {r["sku"]}' for r in lines}
 
             stats = comparison_stats(lines, [v["vendor_id"] for v in grid_vendors], fields, norm_by_pair)
             tiles = st.columns(4)
@@ -1361,12 +1387,6 @@ def main() -> None:
             st.html(comparison_html(lines, grid_vendors, fields, "normalized", norm_by_pair), unsafe_allow_javascript=True)
             if not lines:
                 st.info("The comparison grid is waiting for event lines.")
-
-            if st.session_state.pop("_open_evidence_dialog", False):
-                dvendor, dline = st.session_state.get("bid_vendor"), st.session_state.get("bid_line")
-                if dvendor in vendor_names and dline in line_names:
-                    drecord = unit_price_index(fields).get((dline, dvendor))
-                    open_evidence_dialog(vendor_names[dvendor], line_names[dline], drecord, any(r["vendor_id"] == dvendor for r in fields))
 
             st.divider()
             with st.container(border=True):
