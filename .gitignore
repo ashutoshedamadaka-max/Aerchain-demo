@@ -53,5 +53,9 @@ Thumbs.db
 /dataset/truth/
 /dataset/artifacts/*
 !/dataset/artifacts/rfx.json
+!/dataset/artifacts/V1_response.xlsx
+!/dataset/artifacts/V4_Meridian_RateCard.jpg
+!/dataset/artifacts/V5_response.txt
+!/dataset/artifacts/previews/
 /dataset/eval/*
 !/dataset/eval/eval_snapshot.json
