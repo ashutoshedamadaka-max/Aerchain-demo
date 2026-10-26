@@ -27,6 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from app import award_words, clarify, fmt
+from app.overview import render_overview
 from app.award_note import generate_award_note
 from src import settings
 STATES = {
@@ -35,6 +36,17 @@ STATES = {
     "not_quoted": ("—", "Not quoted"),
     "missing": ("∅", "Missing"),
 }
+PAGE_INTROS = {
+    "RFx": "What the buyer asked for: 30 box sizes and a supplier questionnaire. Everything else in this app is measured against this request.",
+    "Event": "Everything that came back: who replied, what processing took, and the values the system wants a person to check, most valuable first.",
+    "Comparison": "All quotes on one basis (₹ per box, before delivery). Hover any cell for the exact source text. The recommendation says who should win, and why.",
+    "Ask": "Ask in plain English. Answers come from the comparison data, not from re-reading documents, and every lookup is shown. Uses a paid AI model.",
+    "Evals": "How well it works, graded against a hidden answer key. A silent error, a wrong number shown as certain, is the one that matters most.",
+}
+
+
+def page_intro(page: str) -> None:
+    st.info(PAGE_INTROS[page], icon="💡")
 CSS = """
 <style>
 .quote-scroll {overflow-x:auto; padding:4px 0 16px}
@@ -892,7 +904,7 @@ def render_rfx(db: Path) -> None:
         st.error(f"The issued RFx could not be read: {exc}")
         return
     st.title("Request for quotation")
-    st.caption("Issued sourcing requirements · read-only")
+    page_intro("RFx")
     items = rfx.get("lines", [])
     cost = rfx.get("total_should_cost_value", rfx.get("total_should_cost_inr"))
     if cost is None and items and all(r.get("should_cost_inr_pc") is not None and r.get("annual_qty") is not None for r in items):
@@ -1087,6 +1099,7 @@ def render_live_activity(db: Path) -> None:
 def render_evals(db: Path) -> None:
     """Present recorded benchmark results; never run graders or paid model calls."""
     st.title("Evals")
+    page_intro("Evals")
     st.write("Did we read the evidence correctly, flag uncertainty, and apply the buying rules correctly?")
     try:
         snap = json.loads(SNAPSHOT.read_text(encoding="utf-8"))
@@ -1207,7 +1220,7 @@ ASK_CHIPS = ["Which vendors cleared the quality gates?", "Show me the arithmetic
 def render_ask(db: Path) -> None:
     """Use the CLI analyst entry point; initialize its client only on submission."""
     st.title("Ask")
-    st.write("Ask about quotes, commercial terms or source evidence.")
+    page_intro("Ask")
     st.caption("Try one:")
     for col, chip in zip(st.columns(len(ASK_CHIPS)), ASK_CHIPS):
         col.button(chip, key="chip_" + chip[:12], use_container_width=True, on_click=st.session_state.__setitem__, args=("analyst_q", chip))
@@ -1282,10 +1295,10 @@ def render_ask(db: Path) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Sourcing workspace", page_icon="▦", layout="wide")
-    st.sidebar.title("Sourcing workspace")
+    st.set_page_config(page_title="Vendor Quote Intelligence", page_icon="▦", layout="wide")
+    st.sidebar.title("Vendor Quote Intelligence")
     db = Path(os.environ.get("PROCUREMENT_DB", str(ROOT / "procurement.db")))
-    st.sidebar.caption("Read-only bids · editable buyer settings")
+    st.sidebar.caption("Reads supplier quotes in any format and recommends who should win, with evidence. Synthetic demo data.")
     st.sidebar.button("Refresh")
     try:
         lines = read_table(db, """
@@ -1300,14 +1313,14 @@ def main() -> None:
         apply_cell_link(comparison_vendors(vendors), lines)
         review_column, review_direction = review_sort_selection()
         apply_questionnaire_link()
-        pages = ["RFx", "Event", "Comparison", "Ask", "Evals"]
-        page = st.sidebar.radio("Page", pages, key="page", index=1, format_func=lambda p: f"{pages.index(p) + 1}. {p}")
+        pages = ["Overview", "RFx", "Event", "Comparison", "Ask", "Evals"]
+        page = st.sidebar.radio("Page", pages, key="page", index=0, format_func=lambda p: "★ Start here" if p == "Overview" else f"{pages.index(p)}. {p}")
         if not db.is_file():
             st.info("Waiting for procurement.db. The workspace will display data when the pipeline database is available.")
         if page == "Event":
             st.markdown("<style>[data-testid='stMainBlockContainer']{padding-top:1rem;padding-bottom:1rem} [data-testid='stVerticalBlock']{gap:.65rem} [data-testid='stHorizontalBlock']{flex-wrap:nowrap;gap:.8rem} [data-testid='stColumn']{min-width:0!important;flex:1 1 0!important} [data-testid='stMetricValue']{font-size:1.6rem} h1{margin:0;padding-top:0} .review-scroll{overflow:visible}</style>", unsafe_allow_html=True)
             st.title("Event")
-            st.caption("Corrugated packaging sourcing")
+            page_intro("Event")
             unknown = render_event_tiles(db, lines, submissions, len(review_queue(db)))
             st.divider()
             render_processing(db, len({s["vendor_id"] for s in submissions}), len(lines))
@@ -1325,6 +1338,7 @@ def main() -> None:
             render_review_queue(db, review_column, review_direction, unknown)
         elif page == "Comparison":
             st.title("Comparison")
+            page_intro("Comparison")
             grid_vendors = comparison_vendors(vendors)
             # One current submission per vendor, consistently used by the grid, the stat tiles and the Details pane.
             fields = read_table(db, """
@@ -1391,6 +1405,12 @@ def main() -> None:
             st.divider()
             with st.container(border=True):
                 render_vendor_clarifications(fields, lines, grid_vendors, db)
+        elif page == "Overview":
+            try:
+                processing = processing_summary(db.resolve()) if db.is_file() else None
+            except (sqlite3.Error, ImportError):
+                processing = None
+            render_overview(db, SNAPSHOT, processing)
         elif page == "Ask":
             render_ask(db)
         elif page == "Evals":

@@ -24,7 +24,7 @@ def empty_db(tmp_path, monkeypatch):
 def test_all_pages_with_empty_schema(empty_db):
     before = empty_db.read_bytes()
     app = AppTest.from_file(str(ROOT / "app/main.py"), default_timeout=15).run()
-    for page in ("Event", "Comparison", "Ask", "RFx"):
+    for page in ("Overview", "Event", "Comparison", "Ask", "RFx", "Evals"):
         app.sidebar.radio[0].set_value(page).run()
         assert not app.exception
         assert not app.error
@@ -177,7 +177,7 @@ def test_invalid_cell_links_are_ignored(empty_db,vendor,line):
     app.query_params["bid_line"] = line
     app.run()
     assert not app.exception
-    assert app.sidebar.radio[0].value == "Event"
+    assert app.sidebar.radio[0].value == "Overview"
 
 
 def test_cell_cards_are_local_escaped_and_keyboard_accessible():
@@ -207,6 +207,7 @@ def test_exact_status_glyphs():
 def test_settings_row_lives_only_on_event(empty_db):
     """The review block threshold widget is on Event's Settings expander and nowhere else (not duplicated on Comparison)."""
     app = AppTest.from_file(str(ROOT / "app/main.py"), default_timeout=15).run()
+    app.sidebar.radio[0].set_value("Event").run()
     assert not app.exception
     assert app.number_input[0].value == 5.0 and "5%" in app.number_input[0].label
     app.sidebar.radio[0].set_value("Comparison").run()

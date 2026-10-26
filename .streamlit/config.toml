@@ -3,3 +3,12 @@ headless = true
 
 [browser]
 gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[theme.light]
+primaryColor = "#2563eb"
+
+[theme.dark]
+primaryColor = "#60a5fa"
